@@ -63,6 +63,7 @@
     <button class="btn btn-primary" type="submit">Add environment</button>
   </form>
 
+  <div class="table-scroll">
   <table class="data">
     <thead>
       <tr><th>Slug</th><th>Tokens</th><th>Created</th><th class="right">Actions</th></tr>
@@ -85,6 +86,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
 </div>
 {{end}}
 
@@ -119,15 +121,19 @@
         interpreted, so put a reference here rather than the data itself — anyone
         who redeems the token sees all of it.</p>
     </div>
-    <div class="row">
+    {{/* Lifetime, max uses and the button are one decision made in one line.
+         Their hints live under the row rather than inside the fields, so a
+         sentence of explanation cannot stretch the column above it. */}}
+    <div class="row tight">
       <div class="field">
         <label for="nt-ttl">Lifetime</label>
         {{/* Value and unit are separate fields and the multiplication happens on
              the server, so this works with JavaScript switched off and the
              ceiling is enforced in exactly one place. */}}
         <div class="combo">
-          <input id="nt-ttl" name="ttlValue" type="number" min="1" value="{{.Form.TTLValue}}"
-                 required autocomplete="off" oninput="updateLifetime(this.form)">
+          <input id="nt-ttl" class="num" name="ttlValue" type="number" min="1"
+                 value="{{.Form.TTLValue}}" required autocomplete="off"
+                 oninput="updateLifetime(this.form)">
           <select name="ttlUnit" aria-label="Lifetime unit" onchange="updateLifetime(this.form)">
             {{$unit := .Form.TTLUnit}}
             {{range .TTLUnits}}
@@ -136,21 +142,22 @@
             {{end}}
           </select>
         </div>
-        <p class="hint lifetime-hint">Ceiling: {{.MaxTTLLabel}}</p>
       </div>
       <div class="field">
         <label for="nt-uses">Max uses</label>
-        <input id="nt-uses" name="maxUses" type="number" min="1" placeholder="unlimited"
-               value="{{.Form.MaxUses}}" autocomplete="off">
-        <p class="hint">Leave empty for no limit. 1 means redeeming it spends it.</p>
+        <input id="nt-uses" class="num" name="maxUses" type="number" min="1" placeholder="∞"
+               value="{{.Form.MaxUses}}" autocomplete="off"
+               title="Leave empty for no limit. 1 means redeeming it spends it.">
       </div>
-      <div class="field grow">
+      <div class="field">
         {{/* The fields beside this one start with a label, so without a stand-in
              of the same height the button would float a label above them. */}}
         <span class="label-spacer" aria-hidden="true"></span>
         <button class="btn btn-primary" type="submit">Issue token</button>
       </div>
     </div>
+
+    <p class="hint lifetime-hint">Ceiling: {{.MaxTTLLabel}} · leave max uses empty for no limit</p>
   </form>
 
   <div class="filter-bar">
@@ -164,6 +171,7 @@
     </div>
   </div>
 
+  <div class="table-scroll">
   <table class="data tokens">
     <thead>
       <tr>
@@ -173,6 +181,7 @@
     </thead>
     {{template "token_rows" .}}
   </table>
+  </div>
 </div>
 {{end}}
 
@@ -311,6 +320,7 @@
     <button class="btn btn-primary" type="submit">Create key</button>
   </form>
 
+  <div class="table-scroll">
   <table class="data">
     <thead>
       <tr><th>Key</th><th>Scope</th><th>Label</th><th>Created</th><th>State</th><th class="right">Actions</th></tr>
@@ -342,6 +352,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
 </div>
 {{end}}
 
@@ -443,6 +454,7 @@
     </dl>
 
     {{if .Deliveries}}
+    <div class="table-scroll">
     <table class="data compact">
       <thead>
         <tr><th>When</th><th>Event</th><th>Result</th><th>Detail</th></tr>
@@ -462,6 +474,7 @@
         {{end}}
       </tbody>
     </table>
+    </div>
     {{else}}
     <p class="muted">No deliveries yet.</p>
     {{end}}

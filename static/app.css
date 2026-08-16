@@ -136,6 +136,9 @@ code, .key { font-family: var(--mono); font-size: .88em; }
   padding: 0 24px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  /* On a narrow screen the environment switcher drops to its own line rather
+     than pushing the whole page sideways. */
+  flex-wrap: wrap;
 }
 
 .tab {
@@ -200,8 +203,16 @@ code, .key { font-family: var(--mono); font-size: .88em; }
    correct if that changes. */
 .label-spacer { display: block; font-size: 11px; line-height: 1.55; }
 .label-spacer::before { content: "\00a0"; }
-/* The button should fill neither the row nor nothing: keep it its own size. */
+
+/* A button is sized by its label. Inside a flex column it would otherwise
+   stretch to the full width of whatever field it sits in, which is how a
+   three-word button ends up half a metre wide. */
 .field > .btn { align-self: flex-start; }
+
+/* A row of short, related controls: each takes the width of its own input
+   rather than an equal share of the line. */
+.create-form .row.tight { align-items: flex-start; }
+.create-form .row.tight .field { flex: none; }
 
 .field label, .card form label {
   font-size: 11px;
@@ -276,6 +287,12 @@ textarea {
   resize: vertical;
   line-height: 1.5;
 }
+
+/* Numeric inputs hold two or three digits; the full width above claims space
+   the value never uses. This must come after that rule, not before: the two
+   selectors carry the same specificity, so the later one is the only reason
+   this wins. */
+input.num { width: 9ch; }
 
 input:focus-visible, select:focus-visible, textarea:focus-visible,
 input:focus, select:focus, textarea:focus {
@@ -377,6 +394,12 @@ textarea.invalid:focus { box-shadow: 0 0 0 3px rgba(220, 38, 38, .22); }
 a.env-pill:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
 
 /* ---------- tables ---------- */
+
+/* A dense table scrolls inside its own box. Without this the widest table on
+   the page decides the width of the page, and every other panel — the form,
+   the banners, the filter chips — gets dragged sideways with it. */
+.table-scroll { overflow-x: auto; margin-bottom: 16px; }
+.table-scroll table.data { margin-bottom: 0; }
 
 table.data {
   width: 100%;

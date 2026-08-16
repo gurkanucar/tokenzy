@@ -10,6 +10,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -452,6 +454,37 @@ func adminPasswordFromEnv() (string, error) {
 	return os.Getenv(envAdminPassword), nil
 }
 
+// staticVersion is a short hash of the embedded assets, appended to their URLs
+// by the templates.
+//
+// Without it the panel's CSS is cached for an hour, so a layout fix is
+// invisible to everyone who has already visited — they keep seeing the broken
+// version and there is nothing on the page to tell them to reload. Hashing the
+// content rather than stamping the build time means the URL changes when the
+// asset does and not merely when the binary does.
+func staticVersion() (string, error) {
+	sum := sha256.New()
+
+	err := fs.WalkDir(staticFS, "static", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		content, err := staticFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		// The name goes in too, so renaming a file changes the version even if
+		// no byte of content did.
+		sum.Write([]byte(path))
+		sum.Write(content)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("hash static assets: %w", err)
+	}
+	return hex.EncodeToString(sum.Sum(nil))[:12], nil
+}
+
 // buildHandler wires the three surfaces onto one mux: static assets, the JSON
 // API (API key auth) and the admin UI (session auth).
 func buildHandler(database *db.DB, dispatcher *webhook.Dispatcher, limits token.Limits) (http.Handler, error) {
@@ -464,6 +497,11 @@ func buildHandler(database *db.DB, dispatcher *webhook.Dispatcher, limits token.
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/",
 		cacheControl(http.FileServerFS(staticSub))))
+
+	assets, err := staticVersion()
+	if err != nil {
+		return nil, err
+	}
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -485,7 +523,7 @@ func buildHandler(database *db.DB, dispatcher *webhook.Dispatcher, limits token.
 
 	// Admin UI.
 	sessions := &auth.Sessions{DB: database}
-	uiServer, err := ui.New(database, sessions, dispatcher, limits, templatesFS)
+	uiServer, err := ui.New(database, sessions, dispatcher, limits, templatesFS, assets)
 	if err != nil {
 		return nil, err
 	}

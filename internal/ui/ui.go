@@ -50,8 +50,11 @@ type Server struct {
 
 // New parses the embedded templates. files is the root FS containing the
 // "templates" directory.
+// assetVersion is appended to static asset URLs so a changed stylesheet is
+// actually fetched rather than served from a browser cache that was told it
+// could keep the old one for an hour.
 func New(database *db.DB, sessions *auth.Sessions, dispatcher *webhook.Dispatcher,
-	limits token.Limits, files fs.FS) (*Server, error) {
+	limits token.Limits, files fs.FS, assetVersion string) (*Server, error) {
 
 	s := &Server{
 		db:       database,
@@ -61,8 +64,14 @@ func New(database *db.DB, sessions *auth.Sessions, dispatcher *webhook.Dispatche
 		pages:    make(map[string]*template.Template, len(pageFiles)),
 	}
 
+	funcs := template.FuncMap{
+		"asset": func(name string) string {
+			return "/static/" + name + "?v=" + assetVersion
+		},
+	}
+
 	for _, name := range pageFiles {
-		t, err := template.New(name).ParseFS(files,
+		t, err := template.New(name).Funcs(funcs).ParseFS(files,
 			"templates/base.html", "templates/partials.html", "templates/"+name)
 		if err != nil {
 			return nil, fmt.Errorf("parse page %s: %w", name, err)
@@ -70,7 +79,7 @@ func New(database *db.DB, sessions *auth.Sessions, dispatcher *webhook.Dispatche
 		s.pages[name] = t
 	}
 
-	frags, err := template.New("partials.html").ParseFS(files, "templates/partials.html")
+	frags, err := template.New("partials.html").Funcs(funcs).ParseFS(files, "templates/partials.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse partials: %w", err)
 	}
