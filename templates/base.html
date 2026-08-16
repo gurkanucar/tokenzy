@@ -21,58 +21,101 @@
 })();
 </script>
 </head>
-<body>
+<body class="{{if .User}}app-body{{else}}auth-body{{end}}">
 
-<header class="topbar">
-  <a class="brand" href="/ui/projects">tokenzy</a>
+{{if .User}}
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <a class="brand" href="/ui/projects" aria-label="Tokenzy projects">
+        <svg class="brand-mark" viewBox="0 0 36 36" aria-hidden="true">
+          <rect width="36" height="36" rx="10" fill="currentColor"/>
+          <circle cx="14" cy="18" r="5" fill="none" stroke="white" stroke-width="2.5"/>
+          <path d="M19 18h9M24 18v4M28 18v3" fill="none" stroke="#61e4c5" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+        <span>tokenzy</span>
+      </a>
+      <button class="theme-btn" type="button" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme">
+        <span class="only-light">Moon</span><span class="only-dark">Sun</span>
+      </button>
+    </div>
 
-  {{if .Project}}
-  <nav class="crumbs" aria-label="Breadcrumb">
-    <a href="/ui/p/{{.Project.Slug}}">{{.Project.Name}}</a>
-    {{if .Env}}
-      <span class="sep">/</span>
-      <span class="env-pill">{{.Env.Slug}}</span>
-    {{end}}
-  </nav>
-  {{end}}
+    <div class="nav-eyebrow">Workspace</div>
+    <nav class="primary-nav" aria-label="Primary">
+      <a class="nav-item {{if not .Project}}active{{end}}" href="/ui/projects">Projects</a>
+    </nav>
 
-  <div class="spacer"></div>
+    {{if .Project}}
+    <div class="project-rail">
+      <div class="nav-eyebrow">Current project</div>
+      <a class="project-current" href="/ui/p/{{.Project.Slug}}">
+        <strong>{{.Project.Name}}</strong><code>{{.Project.Slug}}</code>
+      </a>
 
-  <button class="icon-btn" type="button" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme">
-    <span class="only-light">☾</span><span class="only-dark">☀</span>
-  </button>
-
-  {{if .User}}
-  <form method="post" action="/ui/logout" class="inline">
-    <span class="who">{{.User}}</span>
-    <button class="btn btn-ghost" type="submit">Sign out</button>
-  </form>
-  {{end}}
-</header>
-
-{{if .Env}}
-<nav class="tabs">
-  <a class="tab {{if eq .Tab "tokens"}}active{{end}}"   href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/tokens">Tokens</a>
-  <a class="tab {{if eq .Tab "otps"}}active{{end}}"     href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/otps">Codes</a>
-  <a class="tab {{if eq .Tab "keys"}}active{{end}}"     href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/keys">API keys</a>
-  <a class="tab {{if eq .Tab "webhooks"}}active{{end}}" href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/webhooks">Webhooks</a>
-
-  {{if .Envs}}
-  <div class="env-switch">
-    <label for="env-select">Environment</label>
-    <select id="env-select" onchange="switchEnv(this.value)">
-      {{range .Envs}}
-      <option value="{{.Slug}}" {{if eq .Slug $.Env.Slug}}selected{{end}}>{{.Slug}}</option>
+      {{if .Env}}
+      {{if .Envs}}
+      <div class="env-switch sidebar-env">
+        <label for="env-select">Environment</label>
+        <select id="env-select" onchange="switchEnv(this.value)">
+          {{range .Envs}}
+          <option value="{{.Slug}}" {{if eq .Slug $.Env.Slug}}selected{{end}}>{{.Slug}}</option>
+          {{end}}
+        </select>
+      </div>
       {{end}}
-    </select>
-  </div>
-  {{end}}
-</nav>
-{{end}}
+      <nav class="project-nav" aria-label="Project">
+        <a class="nav-item {{if eq .Tab "tokens"}}active{{end}}" href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/tokens">Tokens</a>
+        <a class="nav-item {{if eq .Tab "otps"}}active{{end}}" href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/otps">One-time codes</a>
+        <a class="nav-item {{if eq .Tab "keys"}}active{{end}}" href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/keys">API keys</a>
+        <a class="nav-item {{if eq .Tab "webhooks"}}active{{end}}" href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/webhooks">Webhooks</a>
+      </nav>
+      {{else}}
+      <nav class="project-nav" aria-label="Project">
+        <a class="nav-item active" href="/ui/p/{{.Project.Slug}}">Environments</a>
+      </nav>
+      {{end}}
+    </div>
+    {{end}}
 
-<main class="page">
-  {{template "content" .}}
-</main>
+    <div class="sidebar-foot">
+      <span class="user-avatar" aria-hidden="true">{{slice .User 0 1}}</span>
+      <div class="user-meta"><strong>{{.User}}</strong><span>Administrator</span></div>
+      <form method="post" action="/ui/logout" class="inline">
+        <button class="signout-btn" type="submit">Sign out</button>
+      </form>
+    </div>
+  </aside>
+
+  <div class="workspace">
+    <header class="workspace-head">
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <a href="/ui/projects">Projects</a>
+        {{if .Project}}<span class="sep">/</span><a href="/ui/p/{{.Project.Slug}}">{{.Project.Name}}</a>{{end}}
+        {{if .Env}}<span class="sep">/</span><span>{{.Env.Slug}}</span>{{end}}
+      </nav>
+      <button class="icon-btn mobile-theme" type="button" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme">
+        <span class="only-light">Moon</span><span class="only-dark">Sun</span>
+      </button>
+    </header>
+    <main class="page">{{template "content" .}}</main>
+  </div>
+</div>
+{{else}}
+<header class="auth-topbar">
+  <a class="brand" href="/ui/login">
+    <svg class="brand-mark" viewBox="0 0 36 36" aria-hidden="true">
+      <rect width="36" height="36" rx="10" fill="currentColor"/>
+      <circle cx="14" cy="18" r="5" fill="none" stroke="white" stroke-width="2.5"/>
+      <path d="M19 18h9M24 18v4M28 18v3" fill="none" stroke="#61e4c5" stroke-width="2.5" stroke-linecap="round"/>
+    </svg>
+    <span>tokenzy</span>
+  </a>
+  <button class="icon-btn" type="button" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme">
+    <span class="only-light">Moon</span><span class="only-dark">Sun</span>
+  </button>
+</header>
+<main class="page auth-page">{{template "content" .}}</main>
+{{end}}
 
 <script src="{{asset "htmx.min.js"}}"></script>
 <script>
