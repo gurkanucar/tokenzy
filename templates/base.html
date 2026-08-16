@@ -53,6 +53,7 @@
 {{if .Env}}
 <nav class="tabs">
   <a class="tab {{if eq .Tab "tokens"}}active{{end}}"   href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/tokens">Tokens</a>
+  <a class="tab {{if eq .Tab "otps"}}active{{end}}"     href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/otps">Codes</a>
   <a class="tab {{if eq .Tab "keys"}}active{{end}}"     href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/keys">API keys</a>
   <a class="tab {{if eq .Tab "webhooks"}}active{{end}}" href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/webhooks">Webhooks</a>
 
@@ -187,6 +188,11 @@ function copyConsumeCurl(btn, token) {
     '  -H "X-App-Key: <YOUR_CONSUME_KEY>" \\\n' +
     '  -H "Content-Type: application/json" \\\n' +
     '  -d \'{"token": "' + token + '"}\'');
+}
+
+// The code, plus the context it only means anything inside of.
+function copyCode(btn, code) {
+  copyText(btn, code);
 }
 
 function copyText(btn, text) {

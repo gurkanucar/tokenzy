@@ -14,6 +14,7 @@ import (
 	"tokenzy/internal/db"
 	"tokenzy/internal/model"
 	"tokenzy/internal/token"
+	"tokenzy/internal/ttl"
 )
 
 // pageSize is how many tokens one "Load more" brings in.
@@ -79,7 +80,7 @@ func defaultTokenForm() TokenForm {
 	return TokenForm{
 		Payload:  "{\n  \"userId\": \"usr_123\",\n  \"action\": \"accept_invitation\"\n}",
 		TTLValue: "15",
-		TTLUnit:  token.DefaultTTLUnit,
+		TTLUnit:  ttl.DefaultUnit,
 		MaxUses:  "1",
 	}
 }
@@ -99,7 +100,7 @@ type TokensView struct {
 	Status string
 	Form   TokenForm
 	// TTLUnits populates the lifetime unit dropdown.
-	TTLUnits []token.TTLUnit
+	TTLUnits []ttl.Unit
 	// MaxTTLSeconds bounds the field in the browser; MaxTTLLabel says the same
 	// thing in words, so the ceiling is visible before a request is rejected
 	// for exceeding it.
@@ -205,9 +206,9 @@ func (s *Server) tokensView(r *http.Request, q tokensQuery) (TokensView, error) 
 		MoreURL:       moreURL,
 		Status:        status,
 		Form:          form,
-		TTLUnits:      token.TTLUnits,
+		TTLUnits:      ttl.Units,
 		MaxTTLSeconds: int64(ceiling / time.Second),
-		MaxTTLLabel:   token.HumanDuration(ceiling),
+		MaxTTLLabel:   ttl.Human(ceiling),
 		Total:         total,
 	}, nil
 }

@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1 class="page-title">One-time codes</h1>
+<p class="muted">Short numeric codes tied to a <code>type</code> and an <code>identifier</code> —
+  password resets, email and phone verification. Checking one is
+  <code>POST /v1/otp/validate</code> with all three fields; a correct code is spent the instant
+  it is accepted.</p>
+<p class="muted"><strong>The attempt ceiling is the security here.</strong> Six digits is a million
+  possibilities, which a script exhausts quickly — so every wrong guess counts against the code, and
+  it dies when the count runs out. Issuing again for the same identifier while a code is still alive
+  returns that same code, so a "resend" button never leaves somebody holding two.</p>
+{{template "otps_panel" .}}
+{{end}}

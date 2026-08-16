@@ -91,30 +91,6 @@ func TestCeilingNeverExceedsTheAbsoluteOne(t *testing.T) {
 	}
 }
 
-// TestHumanDuration: the ceiling has to read as something a person recognises,
-// not as 2160h0m0s.
-func TestHumanDuration(t *testing.T) {
-	cases := []struct {
-		in   time.Duration
-		want string
-	}{
-		{90 * 24 * time.Hour, "90 days"},
-		{24 * time.Hour, "1 day"},
-		{time.Hour, "1 hour"},
-		{90 * time.Minute, "90 minutes"},
-		{15 * time.Minute, "15 minutes"},
-		{time.Minute, "1 minute"},
-		{90 * time.Second, "90 seconds"},
-		{time.Second, "1 second"},
-		{0, "0 seconds"},
-	}
-	for _, tc := range cases {
-		if got := HumanDuration(tc.in); got != tc.want {
-			t.Errorf("HumanDuration(%s) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
 // TestValidateTTLStillGuardsTheAPI: the JSON API takes seconds directly and
 // must enforce the same ceilings the form does.
 func TestValidateTTLStillGuardsTheAPI(t *testing.T) {

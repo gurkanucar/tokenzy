@@ -116,6 +116,67 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 			want: "idx_webhook_deliveries_hook",
 		},
 		{
+			// Generate's search for a live code. The ORDER BY is what makes this
+			// worth pinning: with the lookup index stopping at identifier,
+			// SQLite preferred the listing index (which could satisfy the
+			// ordering) and scanned the whole environment — 162ms, inside the
+			// write transaction. The index carries the ordering now.
+			name: "otp: find the live code",
+			sql: `SELECT id FROM otps
+			       WHERE environment_id = ? AND type = ? AND identifier = ?
+			         AND consumed_at IS NULL AND revoked_at IS NULL
+			         AND expires_at > ? AND attempt_count < max_attempts
+			       ORDER BY created_at DESC, id DESC LIMIT 1`,
+			args: []any{1, "password_reset", "user@example.com", now},
+			want: "idx_otps_lookup",
+		},
+		{
+			// Validation, both halves. These are UPDATEs on the write
+			// connection, and an index that lured the planner away from the
+			// lookup here took 500 validations from 3.6ms to 12 seconds.
+			name: "otp: spend the code",
+			sql: `UPDATE otps SET consumed_at = ?
+			       WHERE environment_id = ? AND type = ? AND identifier = ? AND code = ?
+			         AND consumed_at IS NULL AND revoked_at IS NULL
+			         AND expires_at > ? AND attempt_count < max_attempts`,
+			args: []any{now, 1, "password_reset", "user@example.com", "123456", now},
+			want: "idx_otps_lookup",
+		},
+		{
+			name: "otp: count a failed attempt",
+			sql: `UPDATE otps SET attempt_count = attempt_count + 1
+			       WHERE environment_id = ? AND type = ? AND identifier = ?
+			         AND consumed_at IS NULL AND revoked_at IS NULL
+			         AND expires_at > ? AND attempt_count < max_attempts`,
+			args: []any{1, "password_reset", "user@example.com", now},
+			want: "idx_otps_lookup",
+		},
+		{
+			// Like the token counts, this seeks the environment and then visits
+			// each of its rows — status is derived from the clock, so nothing
+			// can answer it without looking.
+			//
+			// A covering index does take it from 179ms to 18ms at 200k codes.
+			// It also takes 500 validations from 3.6ms to *twelve seconds*,
+			// because the planner starts preferring it for the UPDATE and turns
+			// a point lookup into a range scan. Slow counts on a page somebody
+			// opens by hand are the better half of that trade.
+			name: "otp: panel status counts",
+			sql: `SELECT COUNT(*) FILTER (WHERE revoked_at IS NOT NULL),
+			             COUNT(*) FILTER (WHERE revoked_at IS NULL AND consumed_at IS NULL
+			                                AND expires_at > ? AND attempt_count < max_attempts)
+			        FROM otps WHERE environment_id = ?`,
+			args: []any{now, 1},
+			want: "idx_otps_env_created",
+		},
+		{
+			name: "otp: panel listing",
+			sql: `SELECT id FROM otps WHERE environment_id = ?
+			       ORDER BY created_at DESC, id DESC LIMIT ?`,
+			args: []any{1, 26},
+			want: "idx_otps_env_created",
+		},
+		{
 			// Measured at 16ms of the single write connection per sweep without
 			// this index, and 0.0ms with it. See migration 004.
 			name: "cleanup: old deliveries",
@@ -174,6 +235,20 @@ func TestKnownTableScans(t *testing.T) {
 			// (19ms against 14ms): the union of two index scans costs more than
 			// one linear pass, and the LIMIT means a pass usually stops early.
 			reason: "a MULTI-INDEX OR over two partial indexes measured slower than the scan",
+		},
+		{
+			name: "cleanup: dead one-time codes",
+			sql: `SELECT id FROM otps
+			       WHERE expires_at < ?
+			          OR (consumed_at IS NOT NULL AND consumed_at < ?)
+			          OR (revoked_at IS NOT NULL AND revoked_at < ?) LIMIT ?`,
+			args: []any{now, now, now, 1000},
+			// An index on expires_at cannot serve an OR across three columns,
+			// and adding one left this scanning exactly as before (12.5ms either
+			// way at 200k codes) while costing insert throughput and disk. The
+			// scan is bounded in any case: retention keeps this table to about a
+			// day of codes.
+			reason: "an OR across three columns; an index on expires_at changed nothing",
 		},
 	}
 

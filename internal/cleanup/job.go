@@ -40,6 +40,14 @@ const (
 	// record of the two, but still measured in days rather than weeks.
 	DefaultConsumedRetention = 72 * time.Hour
 
+	// DefaultOTPRetention keeps dead one-time codes for a day.
+	//
+	// Shorter than either token window, and for a different reason. A spent
+	// token row is a dead secret; a spent OTP row is a dead secret next to an
+	// email address or a phone number. Keeping it is keeping somebody's
+	// personal data to no purpose, so this window is measured in hours.
+	DefaultOTPRetention = 24 * time.Hour
+
 	// DefaultDeliveryRetention keeps settled webhook deliveries for a day. They
 	// are an operational log, not evidence.
 	DefaultDeliveryRetention = 24 * time.Hour
@@ -59,6 +67,7 @@ type Config struct {
 	Interval          time.Duration
 	ExpiredRetention  time.Duration
 	ConsumedRetention time.Duration
+	OTPRetention      time.Duration
 	DeliveryRetention time.Duration
 }
 
@@ -68,6 +77,7 @@ func DefaultConfig() Config {
 		Interval:          DefaultInterval,
 		ExpiredRetention:  DefaultExpiredRetention,
 		ConsumedRetention: DefaultConsumedRetention,
+		OTPRetention:      DefaultOTPRetention,
 		DeliveryRetention: DefaultDeliveryRetention,
 	}
 }
@@ -84,6 +94,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.ConsumedRetention <= 0 {
 		c.ConsumedRetention = d.ConsumedRetention
+	}
+	if c.OTPRetention <= 0 {
+		c.OTPRetention = d.OTPRetention
 	}
 	if c.DeliveryRetention <= 0 {
 		c.DeliveryRetention = d.DeliveryRetention
@@ -129,13 +142,16 @@ func (j *Job) Sweep(ctx context.Context) {
 	settled := j.drain(ctx, "spent tokens", func(ctx context.Context) (int64, error) {
 		return j.db.DeleteSettledTokens(ctx, now.Add(-j.cfg.ConsumedRetention).Unix(), batchSize)
 	})
+	codes := j.drain(ctx, "one-time codes", func(ctx context.Context) (int64, error) {
+		return j.db.DeleteDeadOTPs(ctx, now.Add(-j.cfg.OTPRetention).Unix(), batchSize)
+	})
 	deliveries := j.drain(ctx, "webhook deliveries", func(ctx context.Context) (int64, error) {
 		return j.db.DeleteOldDeliveries(ctx, now.Add(-j.cfg.DeliveryRetention).Unix(), batchSize)
 	})
 
-	if total := expired + settled + deliveries; total > 0 {
-		log.Printf("cleanup: removed %d expired and %d spent tokens, %d delivery records",
-			expired, settled, deliveries)
+	if total := expired + settled + codes + deliveries; total > 0 {
+		log.Printf("cleanup: removed %d expired and %d spent tokens, %d one-time codes, "+
+			"%d delivery records", expired, settled, codes, deliveries)
 	}
 }
 

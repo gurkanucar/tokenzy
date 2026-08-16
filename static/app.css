@@ -548,3 +548,29 @@ tr.revoked { opacity: .55; }
 /* ---------- htmx ---------- */
 
 .htmx-request { opacity: .6; transition: opacity .1s ease; }
+
+/* ---------- one-time codes ---------- */
+
+/* Four states that matter at a glance: green is usable, grey did its job,
+   amber ran out of time, red means somebody or something stopped it. */
+.badge.otp-active   { color: var(--success); background: var(--ok-bg);   border-color: transparent; }
+.badge.otp-consumed { color: var(--fg-muted); }
+.badge.otp-expired  { color: var(--warning); background: var(--hold-bg); border-color: transparent; }
+.badge.otp-locked   { color: var(--danger);  background: var(--warn-bg); border-color: transparent; }
+.badge.otp-revoked  { color: var(--danger);  background: var(--warn-bg); border-color: transparent; }
+
+/* A code is read aloud and typed in, so it is set wide and monospaced. */
+.code-value { font-size: 20px; letter-spacing: .18em; font-weight: 600; }
+
+/* An identifier is usually an email address: long, and worth keeping readable
+   rather than truncating into ambiguity. */
+table.data td.identifier { overflow-wrap: anywhere; min-width: 22ch; }
+
+/* The attempt counter is the one number on this page worth noticing when it
+   runs out. */
+table.data td.attempts { font-variant-numeric: tabular-nums; }
+table.data td.attempts.spent { color: var(--danger); font-weight: 600; }
+
+.filter-bar .search { display: flex; gap: 8px; margin: 0; margin-left: auto; }
+.filter-bar .search input[type="search"] { width: 220px; height: var(--control-h-sm); font-size: 13px; }
+.filter-bar .search select { width: auto; height: var(--control-h-sm); font-size: 13px; }

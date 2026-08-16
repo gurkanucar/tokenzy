@@ -49,18 +49,40 @@ func ScopeAllows(have, want string) bool {
 	return h >= w
 }
 
-var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+var (
+	slugRe    = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+	otpTypeRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+)
+
+// MaxIdentifierLen bounds the string an OTP is addressed to.
+const MaxIdentifierLen = 256
 
 // ErrInvalidSlug and friends are returned by the validators below so callers
 // can map them onto a 400 response.
 var (
-	ErrInvalidSlug     = errors.New("slug must match ^[a-z0-9][a-z0-9_-]{0,62}$")
-	ErrInvalidUsername = errors.New("username must be 3-64 characters")
-	ErrInvalidPassword = errors.New("password must be at least 8 characters")
+	ErrInvalidSlug       = errors.New("slug must match ^[a-z0-9][a-z0-9_-]{0,62}$")
+	ErrInvalidUsername   = errors.New("username must be 3-64 characters")
+	ErrInvalidPassword   = errors.New("password must be at least 8 characters")
+	ErrInvalidOTPType    = errors.New("'type' must match ^[a-z0-9_]{1,64}$")
+	ErrInvalidIdentifier = errors.New("'identifier' is required and must be at most 256 characters")
 )
 
 // ValidSlug reports whether s is a legal project or environment slug.
 func ValidSlug(s string) bool { return slugRe.MatchString(s) }
+
+// ValidOTPType reports whether s is a legal OTP context label.
+func ValidOTPType(s string) bool { return otpTypeRe.MatchString(s) }
+
+// ValidIdentifier reports whether s is an acceptable OTP identifier.
+//
+// The only rules are "present" and "not absurdly long". What the string means
+// is the caller's business: an email address, a phone number, an account id.
+// In particular it is not lowercased or otherwise normalised — two spellings
+// of the same address are two different identifiers here, and deciding they
+// are the same is a judgement only the caller can make.
+func ValidIdentifier(s string) bool {
+	return s != "" && len(s) <= MaxIdentifierLen
+}
 
 // MinPasswordLen is the shortest admin password accepted.
 const MinPasswordLen = 8
@@ -152,6 +174,37 @@ func (t Token) Remaining() (int64, bool) {
 		left = 0
 	}
 	return left, true
+}
+
+// OTP is a short numeric code issued against a (type, identifier) pair.
+//
+// Code holds the plaintext, and unlike a token it is populated wherever the
+// caller is entitled to it — issuing returns it, because the whole point is to
+// send it to somebody. Listings still leave it empty.
+type OTP struct {
+	ID            string
+	EnvironmentID int64
+	Type          string
+	Identifier    string
+	Code          string
+	// AttemptCount rises on every failed validation. When it reaches
+	// MaxAttempts the code is dead, and this is the only thing standing between
+	// a six-digit secret and a script.
+	AttemptCount int64
+	MaxAttempts  int64
+	ExpiresAt    int64
+	ConsumedAt   *int64
+	RevokedAt    *int64
+	CreatedAt    int64
+}
+
+// AttemptsLeft reports how many validations the code has before it locks.
+func (o OTP) AttemptsLeft() int64 {
+	left := o.MaxAttempts - o.AttemptCount
+	if left < 0 {
+		return 0
+	}
+	return left
 }
 
 // Webhook event types. There is deliberately no token.expired: expiry is a

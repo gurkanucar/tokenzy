@@ -14,6 +14,7 @@ import (
 	"tokenzy/internal/auth"
 	"tokenzy/internal/db"
 	"tokenzy/internal/model"
+	"tokenzy/internal/otp"
 	"tokenzy/internal/token"
 )
 
@@ -67,7 +68,8 @@ func newHarness(t *testing.T) *harness {
 
 	// No dispatcher: webhook delivery is exercised in its own test, and a live
 	// one here would try to reach the network.
-	handler, err := buildHandler(database, nil, token.NewLimits(token.DefaultMaxTTL))
+	handler, err := buildHandler(database, nil,
+		token.NewLimits(token.DefaultMaxTTL), otp.NewLimits(otp.DefaultMaxTTL))
 	if err != nil {
 		t.Fatalf("build handler: %v", err)
 	}
@@ -572,5 +574,321 @@ func TestUIRequiresASession(t *testing.T) {
 		if got := rec.Header().Get("Location"); got != "/ui/login" {
 			t.Errorf("%s: redirected to %q, want /ui/login", path, got)
 		}
+	}
+}
+
+// One-time codes.
+
+type issuedCode struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Identifier  string `json:"identifier"`
+	Code        string `json:"code"`
+	ExpiresAt   string `json:"expiresAt"`
+	MaxAttempts int64  `json:"maxAttempts"`
+	Reused      bool   `json:"reused"`
+}
+
+// issueCode asks for a code through the API.
+func (h *harness) issueCode(body map[string]any, wantStatus int) issuedCode {
+	h.t.Helper()
+	rec := h.do("POST", "/v1/otp", model.ScopeWrite, body)
+	var out issuedCode
+	h.decode(rec, wantStatus, &out)
+	return out
+}
+
+// checkCode validates one and reports whether it was accepted.
+func (h *harness) checkCode(otpType, identifier, code string) bool {
+	h.t.Helper()
+	rec := h.do("POST", "/v1/otp/validate", model.ScopeConsume, map[string]any{
+		"type": otpType, "identifier": identifier, "code": code,
+	})
+	var out struct {
+		Valid bool   `json:"valid"`
+		Error string `json:"error"`
+	}
+	h.decode(rec, http.StatusOK, &out)
+	if !out.Valid && out.Error != "invalid_code" {
+		h.t.Fatalf("a rejection came back with error %q, want invalid_code", out.Error)
+	}
+	return out.Valid
+}
+
+// TestOTPRoundTrip: issue, validate, and the code dies on the way through.
+func TestOTPRoundTrip(t *testing.T) {
+	h := newHarness(t)
+
+	issued := h.issueCode(map[string]any{
+		"type": "password_reset", "identifier": "user@example.com", "ttlSeconds": 300,
+	}, http.StatusCreated)
+
+	if len(issued.Code) != otp.DefaultLength {
+		t.Fatalf("code is %d digits, want %d", len(issued.Code), otp.DefaultLength)
+	}
+	if !strings.HasPrefix(issued.ID, otp.IDPrefix) {
+		t.Fatalf("id %q does not start with %q", issued.ID, otp.IDPrefix)
+	}
+	if issued.Reused {
+		t.Fatal("a first issuance reported itself as a resend")
+	}
+	if issued.MaxAttempts != otp.DefaultAttempts {
+		t.Fatalf("maxAttempts = %d, want the default %d", issued.MaxAttempts, otp.DefaultAttempts)
+	}
+
+	if !h.checkCode("password_reset", "user@example.com", issued.Code) {
+		t.Fatal("a fresh code was refused")
+	}
+	// Spending it is what killed it.
+	if h.checkCode("password_reset", "user@example.com", issued.Code) {
+		t.Fatal("the same code was accepted twice")
+	}
+}
+
+// TestOTPResendOverTheAPI: the second call returns 200 and the same code,
+// where a first issuance returns 201.
+func TestOTPResendOverTheAPI(t *testing.T) {
+	h := newHarness(t)
+
+	first := h.issueCode(map[string]any{
+		"type": "password_reset", "identifier": "user@example.com", "ttlSeconds": 300,
+	}, http.StatusCreated)
+
+	second := h.issueCode(map[string]any{
+		"type": "password_reset", "identifier": "user@example.com", "ttlSeconds": 3600,
+	}, http.StatusOK)
+
+	if !second.Reused {
+		t.Fatal("the second issuance did not report itself as a resend")
+	}
+	if second.Code != first.Code || second.ID != first.ID {
+		t.Fatal("the resend produced a different code")
+	}
+	if second.ExpiresAt != first.ExpiresAt {
+		t.Fatalf("the resend extended the expiry from %s to %s", first.ExpiresAt, second.ExpiresAt)
+	}
+}
+
+// TestOTPValidateGivesOneAnswerToEveryFailure is the anti-oracle test. Probing
+// an address must not reveal whether a reset is in flight for it.
+func TestOTPValidateGivesOneAnswerToEveryFailure(t *testing.T) {
+	h := newHarness(t)
+
+	live := h.issueCode(map[string]any{
+		"type": "password_reset", "identifier": "live@example.com", "ttlSeconds": 300,
+	}, http.StatusCreated)
+
+	spent := h.issueCode(map[string]any{
+		"type": "password_reset", "identifier": "spent@example.com", "ttlSeconds": 300,
+	}, http.StatusCreated)
+	h.checkCode("password_reset", "spent@example.com", spent.Code)
+
+	revoked := h.issueCode(map[string]any{
+		"type": "password_reset", "identifier": "revoked@example.com", "ttlSeconds": 300,
+	}, http.StatusCreated)
+	h.decode(h.do("POST", "/v1/manage/otps/"+revoked.ID+"/revoke", model.ScopeAdmin, nil),
+		http.StatusOK, nil)
+
+	wrong := "000000"
+	if wrong == live.Code {
+		wrong = "111111"
+	}
+
+	cases := map[string][3]string{
+		"wrong code":          {"password_reset", "live@example.com", wrong},
+		"no code ever issued": {"password_reset", "nobody@example.com", "123456"},
+		"wrong type":          {"email_verify", "live@example.com", live.Code},
+		"already spent":       {"password_reset", "spent@example.com", spent.Code},
+		"revoked":             {"password_reset", "revoked@example.com", revoked.Code},
+	}
+
+	var first string
+	for name, c := range cases {
+		rec := h.do("POST", "/v1/otp/validate", model.ScopeConsume, map[string]any{
+			"type": c[0], "identifier": c[1], "code": c[2],
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", name, rec.Code)
+		}
+		body := rec.Body.String()
+		if first == "" {
+			first = body
+		} else if body != first {
+			t.Fatalf("%s answered %q but another failure answered %q — "+
+				"the response distinguishes failure modes", name, body, first)
+		}
+	}
+}
+
+// TestOTPAttemptCeilingOverTheAPI: the defence works end to end.
+func TestOTPAttemptCeilingOverTheAPI(t *testing.T) {
+	h := newHarness(t)
+
+	issued := h.issueCode(map[string]any{
+		"type": "password_reset", "identifier": "user@example.com",
+		"ttlSeconds": 300, "maxAttempts": 3,
+	}, http.StatusCreated)
+
+	wrong := "000000"
+	if wrong == issued.Code {
+		wrong = "111111"
+	}
+	for i := 0; i < 3; i++ {
+		if h.checkCode("password_reset", "user@example.com", wrong) {
+			t.Fatalf("guess %d was accepted", i+1)
+		}
+	}
+
+	if h.checkCode("password_reset", "user@example.com", issued.Code) {
+		t.Fatal("the correct code was accepted after the attempt ceiling was reached")
+	}
+
+	var detail struct {
+		Status       string `json:"status"`
+		AttemptCount int64  `json:"attemptCount"`
+		MaxAttempts  int64  `json:"maxAttempts"`
+	}
+	h.decode(h.do("GET", "/v1/manage/otps/"+issued.ID, model.ScopeAdmin, nil), http.StatusOK, &detail)
+	if detail.Status != otp.StatusLocked {
+		t.Fatalf("status = %q, want locked", detail.Status)
+	}
+	if detail.AttemptCount != 3 {
+		t.Fatalf("attemptCount = %d, want 3", detail.AttemptCount)
+	}
+}
+
+// TestOTPValidation covers the input rules.
+func TestOTPValidation(t *testing.T) {
+	h := newHarness(t)
+
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{"no type", map[string]any{"identifier": "a@b.c", "ttlSeconds": 300}},
+		{"bad type", map[string]any{"type": "Password Reset", "identifier": "a@b.c", "ttlSeconds": 300}},
+		{"no identifier", map[string]any{"type": "t", "ttlSeconds": 300}},
+		{"identifier too long", map[string]any{
+			"type": "t", "identifier": strings.Repeat("x", 257), "ttlSeconds": 300,
+		}},
+		{"no ttl", map[string]any{"type": "t", "identifier": "a@b.c"}},
+		{"ttl over the ceiling", map[string]any{"type": "t", "identifier": "a@b.c", "ttlSeconds": 90000}},
+		{"length too short", map[string]any{"type": "t", "identifier": "a@b.c", "ttlSeconds": 300, "length": 3}},
+		{"length too long", map[string]any{"type": "t", "identifier": "a@b.c", "ttlSeconds": 300, "length": 11}},
+		// Zero attempts must be rejected rather than read as "unlimited": a
+		// code with no ceiling is a six-digit password.
+		{"zero attempts", map[string]any{"type": "t", "identifier": "a@b.c", "ttlSeconds": 300, "maxAttempts": 0}},
+		{"too many attempts", map[string]any{"type": "t", "identifier": "a@b.c", "ttlSeconds": 300, "maxAttempts": 21}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if rec := h.do("POST", "/v1/otp", model.ScopeWrite, tc.body); rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	// Validation needs all three fields; a missing one is the caller's mistake,
+	// not a failed check, so it says so rather than answering invalid_code.
+	for _, body := range []map[string]any{
+		{"identifier": "a@b.c", "code": "123456"},
+		{"type": "t", "code": "123456"},
+		{"type": "t", "identifier": "a@b.c"},
+	} {
+		if rec := h.do("POST", "/v1/otp/validate", model.ScopeConsume, body); rec.Code != http.StatusBadRequest {
+			t.Errorf("incomplete validate: status = %d, want 400", rec.Code)
+		}
+	}
+}
+
+// TestOTPScopeMatrix: a client key may spend a code but must not be able to
+// mint one or read one back.
+func TestOTPScopeMatrix(t *testing.T) {
+	h := newHarness(t)
+	issued := h.issueCode(map[string]any{
+		"type": "password_reset", "identifier": "user@example.com", "ttlSeconds": 300,
+	}, http.StatusCreated)
+
+	issueBody := map[string]any{"type": "t", "identifier": "a@b.c", "ttlSeconds": 300}
+	validateBody := map[string]any{"type": "password_reset", "identifier": "user@example.com", "code": "000000"}
+
+	cases := []struct {
+		name    string
+		scope   string
+		method  string
+		path    string
+		body    any
+		allowed bool
+	}{
+		{"consume validates", model.ScopeConsume, "POST", "/v1/otp/validate", validateBody, true},
+		{"consume cannot issue", model.ScopeConsume, "POST", "/v1/otp", issueBody, false},
+		{"consume cannot list", model.ScopeConsume, "GET", "/v1/manage/otps", nil, false},
+		{"consume cannot read a code back", model.ScopeConsume, "GET", "/v1/manage/otps/" + issued.ID, nil, false},
+
+		{"write issues", model.ScopeWrite, "POST", "/v1/otp", issueBody, true},
+		{"write cannot read a code back", model.ScopeWrite, "GET", "/v1/manage/otps/" + issued.ID, nil, false},
+
+		{"admin lists", model.ScopeAdmin, "GET", "/v1/manage/otps", nil, true},
+		{"admin reads a code back", model.ScopeAdmin, "GET", "/v1/manage/otps/" + issued.ID, nil, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := h.do(tc.method, tc.path, tc.scope, tc.body)
+			forbidden := rec.Code == http.StatusForbidden
+			if tc.allowed && forbidden {
+				t.Fatalf("refused with 403: %s", rec.Body.String())
+			}
+			if !tc.allowed && !forbidden {
+				t.Fatalf("allowed with status %d, want 403: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestOTPListingCarriesNoCode.
+func TestOTPListingCarriesNoCode(t *testing.T) {
+	h := newHarness(t)
+
+	issued := h.issueCode(map[string]any{
+		"type": "password_reset", "identifier": "user@example.com", "ttlSeconds": 300,
+	}, http.StatusCreated)
+
+	rec := h.do("GET", "/v1/manage/otps", model.ScopeAdmin, nil)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, body)
+	}
+	if strings.Contains(body, issued.Code) {
+		t.Fatal("the listing contains a plaintext code")
+	}
+
+	var out struct {
+		OTPs []struct {
+			ID         string `json:"id"`
+			Type       string `json:"type"`
+			Identifier string `json:"identifier"`
+			Status     string `json:"status"`
+		} `json:"otps"`
+	}
+	h.decode(rec, http.StatusOK, &out)
+	if len(out.OTPs) != 1 {
+		t.Fatalf("listed %d codes, want 1", len(out.OTPs))
+	}
+	if out.OTPs[0].Identifier != "user@example.com" || out.OTPs[0].Status != otp.StatusActive {
+		t.Fatalf("listing row = %+v", out.OTPs[0])
+	}
+
+	// Reading the single record does return it, and does not spend it.
+	var detail struct {
+		Code string `json:"code"`
+	}
+	h.decode(h.do("GET", "/v1/manage/otps/"+issued.ID, model.ScopeAdmin, nil), http.StatusOK, &detail)
+	if detail.Code != issued.Code {
+		t.Fatal("the code returned for inspection differs from the one issued")
+	}
+	if !h.checkCode("password_reset", "user@example.com", issued.Code) {
+		t.Fatal("inspecting the code spent it")
 	}
 }

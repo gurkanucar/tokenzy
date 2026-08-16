@@ -31,6 +31,7 @@ import (
 	"tokenzy/internal/cleanup"
 	"tokenzy/internal/db"
 	"tokenzy/internal/model"
+	"tokenzy/internal/otp"
 	"tokenzy/internal/token"
 	"tokenzy/internal/ui"
 	"tokenzy/internal/webhook"
@@ -44,8 +45,10 @@ const (
 	envAdminPasswordFile = "TOKENZY_ADMIN_PASSWORD_FILE"
 	envSeedData          = "TOKENZY_SEED_DATA"
 	envMaxTTL            = "TOKENZY_MAX_TTL"
+	envOTPMaxTTL         = "TOKENZY_OTP_MAX_TTL"
 	envRetentionExpired  = "TOKENZY_RETENTION_EXPIRED"
 	envRetentionConsumed = "TOKENZY_RETENTION_CONSUMED"
+	envRetentionOTP      = "TOKENZY_RETENTION_OTP"
 	envRetentionDelivery = "TOKENZY_RETENTION_DELIVERIES"
 	envCleanupInterval   = "TOKENZY_CLEANUP_INTERVAL"
 )
@@ -72,11 +75,16 @@ Environment variables (serve):
                                the secret out of the process environment
   TOKENZY_SEED_DATA            Insert the demo project into an empty database.
                                Default: 1 (enabled). Set to 0 to turn it off.
-  TOKENZY_MAX_TTL              Longest lifetime a caller may request.
+  TOKENZY_MAX_TTL              Longest lifetime a token may be given.
                                Default: 2160h (90 days)
+  TOKENZY_OTP_MAX_TTL          Longest lifetime a one-time code may be given.
+                               Default: 1h (hard ceiling 24h)
   TOKENZY_RETENTION_EXPIRED    How long expired tokens are kept. Default: 24h
   TOKENZY_RETENTION_CONSUMED   How long spent and revoked tokens are kept.
                                Default: 72h
+  TOKENZY_RETENTION_OTP        How long dead one-time codes are kept. Short by
+                               design: the row holds a code and an identifier
+                               that is usually personal data. Default: 24h
   TOKENZY_RETENTION_DELIVERIES How long settled webhook deliveries are kept.
                                Default: 24h
   TOKENZY_CLEANUP_INTERVAL     How often the cleanup sweep runs. Default: 10m
@@ -140,6 +148,10 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	otpLimits, err := otpLimits()
+	if err != nil {
+		return err
+	}
 	cleanupCfg, err := cleanupConfig()
 	if err != nil {
 		return err
@@ -181,7 +193,7 @@ func cmdServe(args []string) error {
 
 	go startSessionJanitor(background, database)
 
-	handler, err := buildHandler(database, dispatcher, limits)
+	handler, err := buildHandler(database, dispatcher, limits, otpLimits)
 	if err != nil {
 		return err
 	}
@@ -232,6 +244,19 @@ func tokenLimits() (token.Limits, error) {
 	return token.NewLimits(maxTTL), nil
 }
 
+// otpLimits reads the ceiling on a one-time code's lifetime.
+func otpLimits() (otp.Limits, error) {
+	maxTTL, err := envDuration(envOTPMaxTTL, otp.DefaultMaxTTL)
+	if err != nil {
+		return otp.Limits{}, err
+	}
+	if maxTTL > otp.AbsoluteMaxTTL {
+		log.Printf("%s is above the hard ceiling of %s and has been capped there",
+			envOTPMaxTTL, otp.AbsoluteMaxTTL)
+	}
+	return otp.NewLimits(maxTTL), nil
+}
+
 // cleanupConfig reads the retention windows.
 func cleanupConfig() (cleanup.Config, error) {
 	cfg := cleanup.DefaultConfig()
@@ -244,6 +269,9 @@ func cleanupConfig() (cleanup.Config, error) {
 		return cfg, err
 	}
 	if cfg.ConsumedRetention, err = envDuration(envRetentionConsumed, cfg.ConsumedRetention); err != nil {
+		return cfg, err
+	}
+	if cfg.OTPRetention, err = envDuration(envRetentionOTP, cfg.OTPRetention); err != nil {
 		return cfg, err
 	}
 	if cfg.DeliveryRetention, err = envDuration(envRetentionDelivery, cfg.DeliveryRetention); err != nil {
@@ -487,7 +515,9 @@ func staticVersion() (string, error) {
 
 // buildHandler wires the three surfaces onto one mux: static assets, the JSON
 // API (API key auth) and the admin UI (session auth).
-func buildHandler(database *db.DB, dispatcher *webhook.Dispatcher, limits token.Limits) (http.Handler, error) {
+func buildHandler(database *db.DB, dispatcher *webhook.Dispatcher,
+	limits token.Limits, otpLimits otp.Limits) (http.Handler, error) {
+
 	mux := http.NewServeMux()
 
 	// Embedded static assets.
@@ -521,9 +551,18 @@ func buildHandler(database *db.DB, dispatcher *webhook.Dispatcher, limits token.
 	manage := &api.Manage{DB: database}
 	manage.Register(mux, apiAuth.Require(model.ScopeAdmin))
 
+	// Issuing a code needs write, because whoever issues it is the party that
+	// sends it; validating needs only consume, so the check can happen wherever
+	// the user typed it.
+	otpAPI := &api.OTP{DB: database, Limits: otpLimits}
+	otpAPI.Register(mux, apiAuth.Require(model.ScopeWrite), apiAuth.Require(model.ScopeConsume))
+
+	manageOTP := &api.ManageOTP{DB: database}
+	manageOTP.Register(mux, apiAuth.Require(model.ScopeAdmin))
+
 	// Admin UI.
 	sessions := &auth.Sessions{DB: database}
-	uiServer, err := ui.New(database, sessions, dispatcher, limits, templatesFS, assets)
+	uiServer, err := ui.New(database, sessions, dispatcher, limits, otpLimits, templatesFS, assets)
 	if err != nil {
 		return nil, err
 	}

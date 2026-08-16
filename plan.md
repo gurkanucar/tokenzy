@@ -1,35 +1,38 @@
-# Tokenzy — Nihai Plan (v0.1, Go) — rev.2
+# Tokenzy — Nihai Plan (v0.1, Go) — rev.3
 
 Tek executable, SQLite (WAL), gömülü HTMX admin paneli. Confezy ile aynı iskelet: Go 1.22+ `net/http`, `modernc.org/sqlite`, `html/template`, `//go:embed`, session cookie (UI), `X-App-Key` (API), argon2 (admin şifresi), readDB(8) + writeDB(1) pattern'i. Dış bağımlılık: `modernc.org/sqlite` + `golang.org/x/crypto` (+ `google/uuid`).
 
-Amaç: JSON payload taşıyan, tek/çok/sınırlı kullanımlık, süreli, iptal edilebilir opak token'lar. Payload sisteme opaktır — doğrulanmaz, yorumlanmaz, olduğu gibi geri verilir.
+İki modül:
+- **Token**: JSON payload taşıyan, tek/çok/sınırlı kullanımlık, süreli, iptal edilebilir opak token'lar (~244 bit, çift UUID).
+- **OTP**: `type` + `identifier` bağlamına bağlı, kısa numerik kod (6-8 hane, ayarlanabilir). Şifre sıfırlama, e-posta/telefon doğrulama vb.
+
+İkisi ayrı tablo, ayrı endpoint, ayrı güvenlik modeli — çünkü entropi profilleri taban tabana zıt (bkz §1/K5).
 
 ---
 
-## 1. Kesinleşen kararlar (rev.2)
+## 1. Kesinleşen kararlar
 
-**K1 — Tek format.** machine/human ayrımı YOK, `format` kolonu YOK. Tüm token'lar aynı şekilde üretilir. Human-readable kısa kod ihtiyacı doğarsa ileride ayrı bir özellik olarak düşünülür; v0.1'in derdi değil.
+**K1 — Token'da tek format.** machine/human ayrımı YOK. Kısa kod ihtiyacını artık OTP modülü karşılıyor.
 
 **K2 — Token = iki random UUID yan yana.**
 
 ```go
 t := "tkn_" + strings.ReplaceAll(uuid.NewString()+uuid.NewString(), "-", "")
-// tkn_ + 64 hex karakter, toplam ~244 bit rastgelelik
+// tkn_ + 64 hex karakter, ~244 bit rastgelelik
 ```
 
-~244 bit entropi ile uzay taranamaz → **deneme sayacı, cooldown, rate limit matematiksel olarak gerekmez** (istenirse operasyonel hijyen için sonra eklenir, v0.1'de yok). Benzersizlik astronomik güvencede ama DB'deki UNIQUE kısıt bedava, yine de durur.
+Uzay taranamaz → token tarafında deneme sayacı/rate limit gerekmez. UNIQUE kısıt bedava, yine de durur.
 
-**K3 — Plaintext saklama, hash YOK.**
-Token DB'de düz metin saklanır. Kazanımlar: (a) yönetim ucundan token/QR **yeniden gösterilebilir** — panelden "kopyala/QR bas" mümkün; (b) lookup düz `WHERE token = ?` ile, ekstra hash adımı yok; (c) tek kolonla hem arama hem gösterme. Telafi yükümlülükleri (bunlar pazarlıksız):
-- Token ve payload **log katmanında maskelenir** — hiçbir log satırında plaintext token geçmez.
-- Listeleme ucunda token asla dönmez, sadece prefix; tam token yalnızca **tekil inceleme** ucundan ve **admin scope** ile görünür.
-- DB dosyası ve yedekleri artık sır deposudur: dosya izinleri dar, yedeklere erişim kısıtlı.
+**K3 — Plaintext saklama (token VE otp), hash YOK.**
+Kazanımlar: yönetim ucundan yeniden gösterme (token/QR), OTP'de **resend** (var olan kodu tekrar dönebilme — hash'le imkansız olurdu), düz lookup. Pazarlıksız telafiler: log katmanında token/kod/identifier maskeleme, listelerde tam değer yok, DB dosyası + yedekleri sır deposu muamelesi, cleanup düzenli işler.
 
-**K4 — "Tek seferlikse validate edince otomatik revoke olur mu?" → Evet, fiilen.**
-Mekanizma şöyle: `maxUses = 1` olan token ilk başarılı consume'da atomik UPDATE ile `used_count = 1` olur → durum anında `exhausted` hesaplanır → ikinci consume koşulu (`used_count < max_uses`) sağlayamaz, `invalid_token` alır. Yani ayrıca bir "revoke çağrısı" gerekmez, tüketme kendisi öldürür. Terminoloji ayrımı bilinçli:
-- `exhausted` = kullanım hakkı bitti (doğal ölüm, consume'un sonucu)
-- `revoked` = yönetici id ile elle iptal etti (müdahale, `revoked_at` set edilir)
-İkisi de aynı sonucu verir (token artık geçmez) ama panelde ayrı görünür — "bu bilet kullanıldı mı yoksa biri mi iptal etti" sorusunun cevabı kaybolmaz. Kayıt silinmez, retention süresince durur (kim, ne zaman kullandı izi).
+**K4 — maxUses=1 token consume'da otomatik ölür.** Atomik UPDATE `used_count`'u artırır → durum `exhausted` → ikinci istek `invalid_token`. Ayrı revoke çağrısı gerekmez. `exhausted` (doğal ölüm) ile `revoked` (elle iptal) panelde ayrı görünür. **Aynı ilke OTP'de:** başarılı validate `consumed_at`'ı set eder → OTP o an ölür; ya da TTL dolar → yine ölür. İkisi de otomatiktir.
+
+**K5 — OTP düşük entropilidir, savunma modeli farklıdır.**
+6 haneli kod = 1 milyonluk uzay; token'ın aksine brute-force **gerçekçi** bir tehdittir. Bu yüzden OTP'de token'da bilerek koymadığımız şey zorunludur: **`max_attempts` (deneme sayacı)**. Her yanlış deneme sayacı artırır; tavana ulaşan OTP ölür (`locked`). Bu olmadan OTP modülü yayına çıkmaz. Entropi token'da savunmanın kendisiydi; OTP'de savunma deneme tavanıdır.
+
+**K6 — OTP kimliği üçlüdür: (type, identifier, code).**
+Doğrulama üç alanın da eşleşmesini ister. `type` çağıranın belirlediği serbest bir bağlam etiketidir (`password_reset`, `email_verify`...), `identifier` da sisteme opak bir string'dir (e-posta, telefon, TC no — sistem umursamaz, yorumlamaz). Bir (env, type, identifier) üçlüsü için aynı anda **en fazla bir aktif OTP** bulunur; generate tekrar çağrılırsa var olan aktif kod dönülür (resend semantiği, bkz §6).
 
 ---
 
@@ -39,263 +42,319 @@ Mekanizma şöyle: `maxUses = 1` olan token ilk başarılı consume'da atomik UP
 Project
 └── Environment (prod otomatik, dev/staging eklenebilir)
     ├── Tokens
+    ├── OTPs
     ├── API Keys   (consume / write / admin)
-    └── Webhooks   (milestone 8)
+    └── Webhooks   (milestone 9)
 ```
 
-Durum DB'de saklanmaz, hesaplanır (öncelik sırasıyla):
+Hesaplanan durumlar (DB'de saklanmaz):
 
 ```text
-revoked   : revoked_at != NULL
-expired   : expires_at <= now
-exhausted : max_uses != NULL && used_count >= max_uses
-active    : gerisi
+Token: revoked → expired → exhausted (used_count >= max_uses) → active
+OTP:   revoked → consumed (consumed_at) → expired → locked (attempt_count >= max_attempts) → active
 ```
 
 ---
 
 ## 3. SQLite Şeması
 
-confezy'deki `users, sessions, projects, environments, api_keys` tabloları aynen taşınır (api_keys scope CHECK'i `('consume','write','admin')`; API key'ler hash'li kalır — plaintext kararı token'lara özgüdür, API key'in yeniden gösterilme ihtiyacı yoktur).
+confezy'den aynen: `users, sessions, projects, environments, api_keys` (scope CHECK: `('consume','write','admin')`; **API key'ler hash'li kalır** — plaintext kararı token/otp'ye özgü, key'in yeniden gösterilme ihtiyacı yok).
 
 ```sql
 CREATE TABLE tokens (
   id             TEXT PRIMARY KEY,            -- "tok_" + 16 byte hex
   environment_id INTEGER NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
   token          TEXT NOT NULL UNIQUE,        -- PLAINTEXT: tkn_ + 64 hex
-  token_prefix   TEXT NOT NULL,               -- ilk 12 karakter, listelerde göstermek için
+  token_prefix   TEXT NOT NULL,               -- ilk 12 karakter, listeler için
   payload_json   TEXT NOT NULL,               -- opak JSON, max 16 KB
   max_uses       INTEGER,                     -- NULL = sınırsız
   used_count     INTEGER NOT NULL DEFAULT 0,
-  expires_at     INTEGER NOT NULL,            -- unix ts
+  expires_at     INTEGER NOT NULL,
   revoked_at     INTEGER,
   created_at     INTEGER NOT NULL,
   last_used_at   INTEGER
 );
 
 CREATE INDEX idx_tokens_env_created ON tokens(environment_id, created_at DESC);
-CREATE INDEX idx_tokens_expires ON tokens(expires_at);   -- cleanup job için
+CREATE INDEX idx_tokens_expires     ON tokens(expires_at);          -- cleanup
+
+CREATE TABLE otps (
+  id             TEXT PRIMARY KEY,            -- "otp_" + 16 byte hex
+  environment_id INTEGER NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  type           TEXT NOT NULL,               -- "password_reset" (^[a-z0-9_]{1,64}$)
+  identifier     TEXT NOT NULL,               -- e-posta/telefon/TC... opak string, ≤256
+  code           TEXT NOT NULL,               -- PLAINTEXT numerik, 4-10 hane
+  attempt_count  INTEGER NOT NULL DEFAULT 0,
+  max_attempts   INTEGER NOT NULL DEFAULT 5,
+  expires_at     INTEGER NOT NULL,
+  consumed_at    INTEGER,
+  revoked_at     INTEGER,
+  created_at     INTEGER NOT NULL
+);
+
+-- KRİTİK indeks: generate'teki aktif-kayıt araması ve validate'in tamamı bu yoldan gider
+CREATE INDEX idx_otps_lookup      ON otps(environment_id, type, identifier);
+CREATE INDEX idx_otps_expires     ON otps(expires_at);              -- cleanup
+CREATE INDEX idx_otps_env_created ON otps(environment_id, created_at DESC);  -- panel listesi
 ```
 
-Webhook tabloları (milestone 8 migration'ı): `webhooks (id, environment_id, url, secret, events, created_at, disabled_at)` ve `webhook_deliveries (id, webhook_id, event_id, event_type, payload, attempt, status_code, next_retry_at, delivered_at, created_at)` — confezy'deki yapıyla aynı.
+Notlar:
+- `code` üzerinde UNIQUE **yok ve olmamalı** — 6 haneli kodlar farklı identifier'larda çakışır, bu normaldir. Benzersizlik alanı (env, type, identifier) üçlüsünün *aktif* kaydıdır ve bu, kod içinde transaction ile sağlanır (§6) — partial unique index kullanılmaz çünkü `expires_at > now` koşulu indekse konulamaz, süresi dolmuş ama henüz temizlenmemiş satırlar yeni üretimi bloke ederdi.
+- Webhook tabloları (m9 migration'ı) rev.2 ile aynı.
 
 ---
 
-## 4. Token Üretimi
+## 4. Token Üretimi ve Consume (rev.2'den değişmedi)
 
 ```http
-POST /v1/tokens
+POST /v1/tokens        (write)   { payload, maxUses, ttlSeconds }
+POST /v1/consume       (consume) { token }
+```
+
+- Üretim kuralları: payload ≤ 16 KB geçerli JSON; ttl zorunlu, çift tavan (`TOKENZY_MAX_TTL` default 90 gün + hard-coded 10 yıl); maxUses null veya ≥ 1.
+- Consume tek atomik UPDATE (koşul + etki + RETURNING), etkilenen satır 0 ise tek tip `invalid_token`. Eşzamanlı isteklerde yalnızca biri kazanır.
+- Yönetim: `GET/POST/DELETE /v1/manage/tokens...` — liste metadata, tekil inceleme payload + tam token (admin scope), inceleme asla tüketmez, revoke id ile.
+
+(Detaylar rev.2 ile aynı; SQL ve cevap formatları değişmedi.)
+
+---
+
+## 5. OTP Üretimi + Resend
+
+```http
+POST /v1/otp
 X-App-Key: tk_write_prod_xxx
 ```
 
 ```json
 {
-  "payload": { "userId": "usr_123", "action": "accept_invitation" },
-  "maxUses": 1,
-  "ttlSeconds": 900
+  "type": "password_reset",
+  "identifier": "user@example.com",
+  "length": 6,
+  "ttlSeconds": 300,
+  "maxAttempts": 5
 }
 ```
+
+Girdi kuralları:
+- `type`: zorunlu, `^[a-z0-9_]{1,64}$`.
+- `identifier`: zorunlu, ≤ 256 karakter, sisteme opak (e-posta mı telefon mu TC mi — umursanmaz, trim dışında dokunulmaz).
+- `length`: opsiyonel, 4-10, default 6. Kod `crypto/rand` ile üretilir, baştaki sıfırlar korunur (kod her zaman string'dir: `"048291"`).
+- `ttlSeconds`: zorunlu, > 0, tavan `TOKENZY_OTP_MAX_TTL` (default 1 saat).
+- `maxAttempts`: opsiyonel, 1-20, default 5.
+
+**Akış (tek transaction, writeDB — resend semantiği burada):**
+
+```text
+1. Aktif kayıt ara: (env, type, identifier) VE consumed_at IS NULL
+   VE revoked_at IS NULL VE expires_at > now VE attempt_count < max_attempts
+2. VARSA  → aynı kaydı dön (kod dahil), reused: true
+           → "tekrar gönder" butonu bu sayede bedava: çağıran aynı kodu
+             tekrar SMS/mail atar, kullanıcı iki farklı kodla şaşırmaz
+3. YOKSA  → yeni kod üret, INSERT, reused: false
+           (eski ölü satırlar kalır, cleanup süpürür)
+```
+
+writeDB tek connection olduğu için bu transaction doğal serialize olur — aynı identifier'a eşzamanlı iki generate isteği yarışamaz, ikisi de aynı kodu alır.
 
 Cevap:
 
 ```json
 {
-  "id": "tok_a1b2c3...",
-  "token": "tkn_3f9a...(64 hex)",
-  "expiresAt": "2026-08-16T15:30:00Z",
-  "maxUses": 1
+  "id": "otp_9f2e...",
+  "type": "password_reset",
+  "identifier": "user@example.com",
+  "code": "482913",
+  "expiresAt": "2026-08-16T15:05:00Z",
+  "maxAttempts": 5,
+  "reused": false
 }
 ```
 
-Girdi kuralları:
-- `payload`: geçerli JSON, serialize hali ≤ 16 KB. Büyük veri için referans konur, verinin kendisi değil.
-- `ttlSeconds`: zorunlu, > 0. Çift tavan: işletme tavanı env var (`TOKENZY_MAX_TTL`, default 90 gün) + mutlak akıl-sağlığı tavanı hard-coded (10 yıl) — taşma/geçmişte-expires_at hatasına karşı girişte red.
-- `maxUses`: null (sınırsız) veya ≥ 1.
+Not: `reused: true` dönüldüğünde `expiresAt` orijinal üretimin süresidir — resend TTL'i uzatmaz. Bu bilinçli: aksi halde sürekli resend ile kod sonsuza dek yaşatılabilirdi. Çağıran taraf "süre çok azaldıysa yenisini üret" isterse önce id ile revoke edip tekrar generate çağırır (ya da v0.2'de `forceNew: true` parametresi eklenir).
 
 ---
 
-## 5. Consume — en kritik nokta
-
-Token URL'de değil body'de taşınır (proxy/access log sızıntısı).
+## 6. OTP Validate — üç alan birden
 
 ```http
-POST /v1/consume
+POST /v1/otp/validate
 X-App-Key: tk_consume_prod_xxx
 ```
 
 ```json
-{ "token": "tkn_3f9a..." }
-```
-
-Tek atomik adım (koşul + etki birlikte, writeDB üzerinden):
-
-```sql
-UPDATE tokens
-SET used_count = used_count + 1, last_used_at = ?
-WHERE token = ?
-  AND environment_id = ?          -- key'in bağlı olduğu env
-  AND revoked_at IS NULL
-  AND expires_at > ?
-  AND (max_uses IS NULL OR used_count < max_uses)
-RETURNING payload_json, used_count, max_uses;
-```
-
-- Etkilenen satır = 1 → payload dönülür. `maxUses = 1` ise bu UPDATE token'ı aynı anda öldürür (K4): ayrı revoke adımı yoktur, tüketme = geçersizleştirme. Eşzamanlı iki istek gelirse yalnızca biri kazanır — "önce oku sonra işaretle" iki adımı ASLA yazılmaz.
-- Etkilenen satır = 0 → sebep ne olursa olsun (yok / expired / exhausted / revoked) dışarıya **tek tip cevap**:
-
-```json
-{ "valid": false, "error": "invalid_token" }
-```
-
-Başarılı cevap:
-
-```json
 {
-  "valid": true,
-  "payload": { "userId": "usr_123", "action": "accept_invitation" },
-  "usage": { "used": 1, "maximum": 1, "remaining": 0 }
+  "type": "password_reset",
+  "identifier": "user@example.com",
+  "code": "482913"
 }
 ```
 
-(`maximum`/`remaining` sınırsız token'da `null`.)
+Üç alan da eşleşmek zorundadır — kod doğru ama type yanlışsa geçmez (password_reset kodu email_verify'da kullanılamaz).
 
----
+**Akış (tek transaction, writeDB):**
 
-## 6. Yönetim API'leri (admin key)
+```sql
+-- Adım 1: atomik tüket (K4: başarılı validate = otomatik expire)
+UPDATE otps
+SET consumed_at = ?
+WHERE environment_id = ? AND type = ? AND identifier = ? AND code = ?
+  AND consumed_at IS NULL
+  AND revoked_at IS NULL
+  AND expires_at > ?
+  AND attempt_count < max_attempts
+RETURNING id;
 
-Çözümleme token ile, yönetim **id** ile çalışır — "token'ı bilmeden iptal edebilme" (cihaz kayboldu senaryosu) bu ayrımdan gelir.
+-- Adım 2 (yalnızca adım 1 → 0 satır ise): yanlış denemeyi say
+UPDATE otps
+SET attempt_count = attempt_count + 1
+WHERE environment_id = ? AND type = ? AND identifier = ?
+  AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ?;
+```
+
+- Adım 1 → 1 satır: kod doğruydu, OTP **o an öldü** (consumed). Cevap:
+
+```json
+{ "valid": true, "type": "password_reset", "identifier": "user@example.com" }
+```
+
+- Adım 1 → 0 satır: sebep ne olursa olsun (kod yanlış / süresi dolmuş / zaten kullanılmış / locked / hiç yok) dışarıya **tek tip cevap** — doğru identifier'ı yoklayan birine "kod var ama yanlış" ile "hiç kod yok" ayrımı bilgi sızdırır:
+
+```json
+{ "valid": false, "error": "invalid_code" }
+```
+
+- Adım 2'deki sayaç artışı `max_attempts`'a ulaşınca OTP `locked` olur ve doğru kod bile artık geçmez (adım 1'in koşulu engeller). 6 haneli düşük entropinin tek gerçek savunması budur (K5).
+- İki adım aynı transaction'dadır; eşzamanlı iki doğru-kod isteğinden yalnızca biri `valid: true` alır (adım 1 atomiktir).
+
+Yönetim uçları:
 
 ```http
-GET    /v1/manage/tokens              ?status=active|expired|exhausted|revoked&limit&cursor
-GET    /v1/manage/tokens/{id}
-POST   /v1/manage/tokens/{id}/revoke
-DELETE /v1/manage/tokens/{id}
+GET    /v1/manage/otps              ?status=active|consumed|expired|locked|revoked&type=&identifier=&limit&cursor
+GET    /v1/manage/otps/{id}         (kod dahil — admin scope; inceleme tüketmez)
+POST   /v1/manage/otps/{id}/revoke
+DELETE /v1/manage/otps/{id}
 ```
 
-- **Listeleme metadata döner:** id, prefix, status, usedCount, maxUses, expiresAt, createdAt, lastUsedAt. Token ve payload listede YOK.
-- **Tekil inceleme payload'ı VE tam token'ı döner** (plaintext kararının karşılığı burada tahsil edilir — QR yeniden basılabilir). Kritik kural: inceleme salt-okumadır, one-time token'ı **asla tüketmez**; tüketen tek yol `/v1/consume`'dur.
-- Token'ı gösterebilen bu uç fiilen token üretme gücüne denktir → yalnızca `admin` scope, en sıkı korunan uç.
-- Revoke: `revoked_at = now` — etkisi anlıktır çünkü her consume DB'ye bakar (stateful tasarım, bilinçli tercih).
-- Scope matrisi:
+Liste cevabında `code` YOK (id, type, identifier, status, attemptCount/maxAttempts, expiresAt, createdAt); tam kod yalnız tekil incelemede.
+
+---
+
+## 7. Scope Matrisi
 
 ```text
-consume → sadece POST /v1/consume
-write   → consume + POST /v1/tokens
-admin   → write + /v1/manage/*
+consume → POST /v1/consume, POST /v1/otp/validate
+write   → consume + POST /v1/tokens + POST /v1/otp
+admin   → write + /v1/manage/* (tokens ve otps)
 ```
+
+Mobil/istemci tarafına yalnızca `consume` key gömülür. OTP üretimi her zaman güvenilir backend'den yapılır — kodu SMS/mail ile gönderen zaten o backend'dir.
 
 ---
 
-## 7. TTL Temizliği (cleanup job)
+## 8. TTL Temizliği (cleanup job)
 
-İki bağımsız savunma:
-1. Consume sorgusu her zaman `expires_at > now` kontrol eder → job gecikse bile süresi dolmuş token kullanılamaz.
-2. Background job (goroutine + `time.Ticker`, 10 dk):
+İki bağımsız savunma (her iki tabloda da):
+1. Consume/validate sorguları her zaman `expires_at > now` kontrol eder → job gecikse bile süresi dolmuş token/OTP kullanılamaz.
+2. Background job (goroutine + `time.Ticker`, 10 dk, batch LIMIT 1000/tur, writeDB):
 
 ```text
-DELETE FROM tokens WHERE expires_at < now - 7 gün                        -- expired retention
-DELETE FROM tokens WHERE (exhausted veya revoked) AND ilgili ts < now - 30 gün
-Batch: LIMIT 1000/tur, writeDB üzerinden
+tokens: expired > 7 gün  → sil ; exhausted/revoked > 30 gün → sil
+otps  : ölü satırlar (consumed/expired/locked/revoked) > 24 saat → sil
 ```
 
-Retention env var: `TOKENZY_RETENTION_EXPIRED=168h`, `TOKENZY_RETENTION_CONSUMED=720h`. Plaintext saklandığı için temizliğin düzenli işlemesi artık sadece yer tasarrufu değil, sır hijyenidir.
+OTP retention'ı kısa tutulur (`TOKENZY_RETENTION_OTP=24h`) — plaintext kod + kişisel veri olabilecek identifier (e-posta/telefon/TC) taşıdığı için burada temizlik yer tasarrufu değil, **veri hijyenidir**. Diğerleri: `TOKENZY_RETENTION_EXPIRED=168h`, `TOKENZY_RETENTION_CONSUMED=720h`.
 
 ---
 
-## 8. Webhook (milestone 8)
+## 9. Webhook (milestone 9)
 
-Event'ler: `token.created`, `token.consumed`, `token.exhausted`, `token.revoked`. (`token.expired` YOK — expiration bir an değil zaman koşuludur.)
-
-- Webhook payload'ında **token'ın kendisi asla bulunmaz** — plaintext DB'de dursa bile ağa çıkan hiçbir yan kanalda token gezmez; id + prefix + metadata + (opsiyonel) token payload'ı gönderilir.
-- Header: `X-Webhook-Id`, `X-Webhook-Signature: sha256=HMAC(secret, body)`.
-- Retry: hemen → 30 sn → 2 dk → 10 dk; delivery kayıtları tutulur (operasyonel log).
-- Gönderim: consume transaction'ı commit olduktan SONRA (in-memory channel + tek worker goroutine).
+Event'ler: `token.created`, `token.consumed`, `token.exhausted`, `token.revoked` + `otp.consumed`, `otp.locked` (opsiyonel, aynı altyapı). Webhook payload'ında token'ın kendisi ve OTP kodu **asla bulunmaz**; identifier bulunur ama URL'si dış dünyaya bakan webhook'larda buna dikkat çağıranın sorumluluğudur (README'ye yazılır). HMAC imza, retry (hemen → 30 sn → 2 dk → 10 dk), delivery log — rev.2 ile aynı.
 
 ---
 
-## 9. Admin UI (HTMX + html/template — confezy'den kopyalanır)
+## 10. Admin UI (HTMX — confezy'den kopyalanır)
 
-Aynı prensipler: embed HTMX + el yazması CSS, `:root`/`[data-theme=dark]` custom properties, localStorage tema toggle, `/ui/*` session korumalı, API'ler saf JSON kalır.
+Aynı prensipler: embed HTMX + el yazması CSS, dark/light custom properties + localStorage toggle, `/ui/*` session korumalı.
 
 ```text
 /ui/login
 /ui/projects
-/ui/p/{slug}                       env listesi
-/ui/p/{slug}/{env}/tokens          liste + status filtresi
-/ui/p/{slug}/{env}/tokens/new      üretim formu (payload textarea + JSON validate, ttl, maxUses)
-/ui/p/{slug}/{env}/keys            key üret/revoke
-/ui/p/{slug}/{env}/webhooks        webhook CRUD + delivery listesi (m8)
+/ui/p/{slug}                        env listesi
+/ui/p/{slug}/{env}/tokens           liste + status filtresi + üretim + detay/revoke
+/ui/p/{slug}/{env}/otps             liste + status/type/identifier filtresi + üretim + detay/revoke
+/ui/p/{slug}/{env}/keys             key üret/revoke
+/ui/p/{slug}/{env}/webhooks         (m9)
 ```
 
-HTMX etkileşimleri:
-- Token listesi: filtre butonları `hx-get` ile tablo fragment'ını yeniler; cursor tabanlı "daha fazla yükle". Listede sadece prefix + status rozeti.
-- Üretim: form `hx-post` → modal fragment, token gösterilir + kopyala butonu.
-- Detay satırı: `hx-get` ile açılır; payload pretty-print + **"Token'ı göster" butonu** (ayrı `hx-get`, tıklanmadan token DOM'a hiç gelmez) + kopyala. İstenirse aynı yerde QR render (küçük bir inline JS QR üreteci embed edilebilir — dış bağımlılıksız, tek dosya; v0.1'de opsiyonel).
-- Revoke: `hx-post` + `hx-confirm` → satır güncellenir, rozet "revoked".
+OTP ekranı HTMX etkileşimleri:
+- Liste: status rozetleri (active/consumed/expired/locked/revoked), attempt göstergesi (`2/5`), type ve identifier'a göre arama (`hx-get` + input `hx-trigger="keyup changed delay:300ms"`).
+- Üretim formu: type, identifier, length (6/8 hızlı seçim + serbest), ttl, maxAttempts → `hx-post`, cevap modalında kod gösterilir + kopyala; `reused: true` ise "Var olan aktif kod döndü" uyarısı.
+- Detay: "Kodu göster" butonu (token'daki gibi tıklanmadan DOM'a gelmez).
+- Revoke: `hx-post` + `hx-confirm`.
 
 ---
 
-## 10. Proje Yapısı
+## 11. Proje Yapısı
 
 ```text
 tokenzy/
 ├── go.mod
-├── main.go                    # CLI: serve, admin-create
+├── main.go
 ├── internal/
-│   ├── db/                    # confezy'den: readDB(8)+writeDB(1), PRAGMA DSN, migration runner
+│   ├── db/                    # readDB(8)+writeDB(1), PRAGMA DSN, migration runner
 │   │   └── migrations/
-│   │       ├── 001_init.sql
+│   │       ├── 001_init.sql   # tokens + otps + indeksler
 │   │       └── 002_webhooks.sql
 │   ├── model/
-│   ├── auth/                  # confezy'den: apikey.go (scope'lar değişir), session.go
-│   ├── token/
-│   │   ├── generate.go        # çift UUID birleştirme
-│   │   ├── consume.go         # atomik UPDATE ... RETURNING
-│   │   └── status.go          # hesaplanan durum
-│   ├── cleanup/
-│   │   └── job.go             # ticker + batch delete
-│   ├── webhook/
-│   │   └── dispatch.go        # channel + worker + retry (m8)
-│   ├── api/
-│   │   ├── tokens.go          # POST /v1/tokens
-│   │   ├── consume.go         # POST /v1/consume
-│   │   └── manage.go          # /v1/manage/*
+│   ├── auth/                  # apikey.go (consume/write/admin), session.go
+│   ├── token/                 # generate.go, consume.go, status.go
+│   ├── otp/
+│   │   ├── generate.go        # crypto/rand numerik kod + resend transaction'ı
+│   │   ├── validate.go        # atomik tüket + attempt sayacı (tek tx)
+│   │   └── status.go
+│   ├── cleanup/job.go         # iki tabloyu da süpürür
+│   ├── webhook/dispatch.go    # (m9)
+│   ├── api/                   # tokens.go, consume.go, otp.go, manage.go
 │   └── ui/
-├── templates/                 # //go:embed — base.html confezy'den
-└── static/                    # htmx.min.js, app.css — confezy'den
+├── templates/                 # //go:embed
+└── static/                    # htmx.min.js, app.css
 ```
 
-Çalıştırma / build: confezy ile aynı (`admin-create`, `serve -port -db`; `CGO_ENABLED=0 go build`).
+---
+
+## 12. Uygulama Sırası
+
+1. **İskelet transferi** (confezy: db/auth/session/ui-base/migrations).
+2. **Project/env/admin** — `prod` otomatik.
+3. **API key** — `tk_{scope}_{env}_{rand}`, hash'li.
+4. **Token üretimi** — çift UUID, plaintext, maskeleme.
+5. **Atomik consume** — paralel 50 istek testi (tam 1 başarılı) + "ikinci deneme invalid" testi.
+6. **OTP modülü** — generate + resend + validate. Test şartları:
+   - Aynı (type, identifier)'a ikinci generate → aynı kod, `reused: true`, TTL uzamıyor
+   - Yanlış kod × maxAttempts → locked; sonrasında DOĞRU kod da `invalid_code`
+   - Doğru kod → `valid: true`; hemen ardından aynı kod → `invalid_code` (auto-expire kanıtı)
+   - Paralel iki doğru-kod isteği → tam 1 `valid: true`
+   - type uyuşmazlığı → `invalid_code` (kod doğru olsa bile)
+7. **Cleanup job** — iki tablo, OTP retention 24h.
+8. **Admin paneli** — tokens + otps ekranları, key yönetimi.
+9. **Webhook** — token + otp event'leri, HMAC, retry, delivery UI.
+10. **v0.2** — `Idempotency-Key`, `forceNew` (OTP), import/export, metrikler (geçersiz validate oranı, locked oranı = brute-force sinyali), opsiyonel rate limit.
 
 ---
 
-## 11. Uygulama Sırası
+## 13. Checklist (release öncesi)
 
-1. **İskelet transferi**: confezy'den db/auth/session/ui-base/migration runner, scope'lar `consume/write/admin`.
-2. **Project/env/admin**: confezy'den aynen; `prod` otomatik.
-3. **API key**: üretim/hash/lookup/scope middleware (`tk_{scope}_{env}_{rand}` — API key'ler hash'li kalır).
-4. **Token üretimi**: POST /v1/tokens, çift UUID, girdi kuralları, plaintext kayıt + log maskeleme.
-5. **Atomik consume**: UPDATE...RETURNING, tek tip hata. Eşzamanlılık testi ŞART: aynı `maxUses=1` token'a paralel 50 istek → tam 1 başarılı. Ek test: başarılı consume sonrası ikinci istek `invalid_token` (K4'ün kanıtı).
-6. **Cleanup job**: ticker, batch delete, retention env vars.
-7. **Admin paneli**: liste/filtre/üretim/detay ("Token'ı göster")/revoke + key yönetimi.
-8. **Webhook**: 4 event, HMAC, retry, delivery UI.
-9. **v0.2**: `Idempotency-Key`, import/export, metrikler (geçersiz consume oranı, one-time'da "ikinci deneme" oranı = kopya/replay sinyali), opsiyonel rate limit.
-
-Milestone 5'in sonunda servis gerçek işini yapar; 7'nin sonunda günlük kullanılabilir.
-
----
-
-## 12. Checklist (release öncesi)
-
-- [ ] Token = tkn_ + iki UUID (64 hex, ~244 bit), crypto RNG; DB'de UNIQUE
-- [ ] Yüksek entropi nedeniyle rate limit/deneme sayacı bilinçli olarak yok
-- [ ] Token plaintext ama: loglarda maskeli, listede sadece prefix, tam hali yalnız admin-scope tekil incelemede
-- [ ] Webhook/log/liste — hiçbir yan kanalda tam token gezmiyor
-- [ ] DB dosyası + yedekleri sır deposu muamelesi görüyor (izinler, erişim)
-- [ ] Payload ≤ 16 KB, geçerli JSON; "çözen herkes payload'ı görür" README'de
-- [ ] TTL çift tavanlı, girişte reddediliyor
-- [ ] Consume tek atomik UPDATE; paralel test + "ikinci deneme invalid" testi geçiyor
-- [ ] maxUses=1 → consume otomatik öldürür (exhausted); revoke ise elle iptal (revoked) — panelde ayrı görünüyor
-- [ ] Yönetici incelemesi tüketmiyor; revoke id ile ve anlık
-- [ ] consume key mobilde, write/admin sadece backend'de — README'de büyük harflerle
-- [ ] Cleanup gecikse bile expired token kullanılamıyor
+- [ ] Token: çift UUID ~244 bit, UNIQUE; deneme sayacı bilinçli olarak YOK
+- [ ] OTP: crypto/rand numerik, baştaki sıfırlar korunuyor (string); `max_attempts` savunması AKTİF ve testli — bu olmadan yayın YOK
+- [ ] Validate üç alan birden eşleşiyor (type + identifier + code); tüm hata halleri tek tip `invalid_code`
+- [ ] Başarılı validate OTP'yi anında öldürüyor (consumed_at); TTL dolumu bağımsız ikinci ölüm yolu
+- [ ] Resend: aktif kayıt varsa aynı kod dönüyor, TTL uzamıyor
+- [ ] (env, type, identifier) başına tek aktif OTP — transaction ile, partial index ile DEĞİL
+- [ ] `code` kolonunda UNIQUE yok (bilinçli)
+- [ ] İndeksler: otps(env,type,identifier), otps(expires_at), otps(env,created_at); tokens(env,created_at), tokens(expires_at)
+- [ ] Plaintext telafileri: log maskeleme (token, kod VE identifier), listede tam değer yok, DB+yedek sır muamelesi
+- [ ] OTP retention 24h — identifier kişisel veri olabilir, hijyen şart
+- [ ] Webhook/log — hiçbir yan kanalda tam token/kod gezmiyor
+- [ ] consume key istemcide, write/admin sadece backend'de — README'de büyük harflerle
+- [ ] Milestone 5 ve 6'daki eşzamanlılık testlerinin tamamı geçiyor

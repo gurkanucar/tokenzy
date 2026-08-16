@@ -1,7 +1,17 @@
 # tokenzy
 
-Opaque tokens that carry a JSON payload. Issue one with a lifetime and an optional usage
-limit, redeem it once or many times, cancel it whenever you like. A single executable:
+Two things that expire, behind one binary:
+
+- **Tokens** — opaque, ~244 bits, carrying a JSON payload. Issue one with a lifetime and an
+  optional usage limit, redeem it once or many times, cancel it whenever you like.
+- **One-time codes** — short numeric codes tied to a `type` and an `identifier`. Password
+  resets, email and phone verification.
+
+They are kept apart on purpose, because their entropy is opposite and so are their
+defences: a token cannot be guessed and therefore needs no attempt counter, while a
+six-digit code is a million possibilities and the attempt ceiling is the only thing making
+it safe.
+
 SQLite (WAL) storage, a JSON API, and an embedded HTMX admin panel. No CGO, so the binary
 is static and cross-compiles cleanly. Nothing is fetched at runtime — HTMX, the CSS and the
 templates are all compiled in.
@@ -18,7 +28,8 @@ links, event passes and QR tickets, device-pairing codes.
 
 - [Build](#build) · [Run](#run) · [Configuration](#configuration-via-environment)
 - [Concepts](#concepts) · [Scopes](#scopes--read-this-before-shipping-a-key)
-- [API](#api) · [Webhooks](#webhooks) · [Admin panel](#admin-panel)
+- [Token API](#token-api) · [One-time codes](#one-time-codes)
+- [Webhooks](#webhooks) · [Admin panel](#admin-panel)
 - [Storage: tokens are kept in plaintext](#storage-tokens-are-kept-in-plaintext)
 - [Deployment](#deployment) · [Tests](#tests)
 
@@ -64,10 +75,12 @@ cp .env.example .env
 | `TOKENZY_ADMIN_PASSWORD` | at least 8 characters |
 | `TOKENZY_ADMIN_PASSWORD_FILE` | read the password from a file; takes precedence over `TOKENZY_ADMIN_PASSWORD` |
 | `TOKENZY_SEED_DATA` | insert the demo project. Default `1` |
-| `TOKENZY_MAX_TTL` | longest lifetime a caller may request. Default `2160h` (90 days) |
+| `TOKENZY_MAX_TTL` | longest lifetime a token may be given. Default `2160h` (90 days) |
+| `TOKENZY_OTP_MAX_TTL` | longest lifetime a one-time code may be given. Default `1h`, hard ceiling `24h` |
 | `TOKENZY_RETENTION_EXPIRED` | how long expired tokens are kept. Default `24h` |
 | `TOKENZY_RETENTION_CONSUMED` | how long spent and revoked tokens are kept. Default `72h` |
 | `TOKENZY_RETENTION_DELIVERIES` | how long settled webhook deliveries are kept. Default `24h` |
+| `TOKENZY_RETENTION_OTP` | how long dead one-time codes are kept. Default `24h` |
 | `TOKENZY_CLEANUP_INTERVAL` | how often the cleanup sweep runs. Default `10m` |
 | `TOKENZY_PORT` | host port published by Docker Compose |
 
@@ -91,6 +104,7 @@ Admin bootstrap behaviour:
 Project
 └── Environment  (prod is created automatically; add staging, dev, …)
     ├── Tokens
+    ├── One-time codes
     ├── API keys   (consume / write / admin)
     └── Webhooks
 ```
@@ -155,8 +169,8 @@ Short lifetimes and revocation do.
 ## Scopes — read this before shipping a key
 
 ```
-consume → POST /v1/consume
-write   → consume + POST /v1/tokens
+consume → POST /v1/consume, POST /v1/otp/validate
+write   → consume + POST /v1/tokens, POST /v1/otp
 admin   → write + /v1/manage/*
 ```
 
@@ -167,10 +181,14 @@ It can spend a token it already holds and nothing else.
 An `admin` key can read any token back out in full — which is the same power as minting
 one, so treat it exactly like a signing key.
 
-Keys are `tk_{scope}_{env}_{random}` and are stored hashed: the plaintext is shown once at
-creation and never again. (Tokens are different — see below.)
+Issuing a one-time code is a `write` operation for a specific reason: whoever issues a code
+is the party that will put it in an SMS or an email, and that is always a backend. Checking
+one is `consume`, so the check can happen wherever the user typed it.
 
-## API
+Keys are `tk_{scope}_{env}_{random}` and are stored hashed: the plaintext is shown once at
+creation and never again. (Tokens and codes are different — see below.)
+
+## Token API
 
 Every request carries `X-App-Key: <key>`.
 
@@ -283,6 +301,144 @@ keeps the history of what it was and whether it was ever used.
 id · `500` something broke. Internal errors never echo detail back — an error from the
 token tables can have a token bound into it.
 
+## One-time codes
+
+A short numeric code addressed to a `type` and an `identifier`. The type is your own
+context label (`password_reset`, `email_verify`); the identifier is whatever you address
+people by — an email, a phone number, an account id. Both are opaque here: matched, never
+interpreted.
+
+### Issue, and resend
+
+```http
+POST /v1/otp
+X-App-Key: tk_write_prod_…
+```
+
+```json
+{
+  "type": "password_reset",
+  "identifier": "user@example.com",
+  "ttlSeconds": 300,
+  "length": 6,
+  "maxAttempts": 5
+}
+```
+
+```json
+{
+  "id": "otp_7955cc3d0f8676b4469fcb4bbbfce1ad",
+  "type": "password_reset",
+  "identifier": "user@example.com",
+  "code": "579295",
+  "expiresAt": "2026-08-16T12:44:23Z",
+  "maxAttempts": 5,
+  "reused": false
+}
+```
+
+- `type` — required, `^[a-z0-9_]{1,64}$`.
+- `identifier` — required, at most 256 characters. Trimmed and otherwise untouched: it is
+  **not** lowercased, so `User@example.com` and `user@example.com` are two different
+  people as far as this service knows. Normalise before you send it.
+- `ttlSeconds` — required, at most `TOKENZY_OTP_MAX_TTL` (and never above 24 hours).
+- `length` — 4 to 10, default 6.
+- `maxAttempts` — 1 to 20, default 5. Zero is rejected rather than read as "unlimited".
+
+**Calling it twice returns the same code.** While a code is alive for a (type, identifier)
+pair, a second request hands that one back with `reused: true` and HTTP 200 instead of 201.
+That is what makes a "resend" button safe: the person receives the code they already have,
+rather than a second one that makes the first ambiguous.
+
+**A resend does not extend the expiry.** If it did, pressing the button often enough would
+keep one code alive forever, which is the one property a short-lived secret must not have.
+Need a genuinely new one? Revoke the old by id, then issue again.
+
+### Validate
+
+```http
+POST /v1/otp/validate
+X-App-Key: tk_consume_prod_…
+```
+
+```json
+{ "type": "password_reset", "identifier": "user@example.com", "code": "579295" }
+```
+
+```json
+{ "valid": true, "type": "password_reset", "identifier": "user@example.com" }
+```
+
+All three fields must match. A `password_reset` code presented as `email_verify` is
+refused even though the digits are right — which is what stops a code issued for one
+purpose being spent on another.
+
+A correct code is **spent the moment it is accepted**. There is no separate expiry step:
+the successful validation is the expiry.
+
+Every failure gets the same answer, with HTTP 200:
+
+```json
+{ "valid": false, "error": "invalid_code" }
+```
+
+Wrong digits, expired, already used, revoked, locked out, or no code ever issued for that
+identifier — one response for all of them. Telling them apart would let somebody probing an
+address learn whether a password reset is in flight for it, which is exactly the fact worth
+hiding.
+
+### The attempt ceiling is the security
+
+Six digits is a million possibilities. A script gets through that; the only reason it does
+not is that every wrong guess counts, and the code dies when the count runs out:
+
+```
+guess 1 → invalid_code   attempts 1/3, active
+guess 2 → invalid_code   attempts 2/3, active
+guess 3 → invalid_code   attempts 3/3, locked
+correct → invalid_code   ← the right code no longer works
+```
+
+That last line is the whole point, and it is asserted in the tests. A correct guess costs
+nothing: only the failing path increments, so a user who fumbles once and then gets it
+right is not charged for the success.
+
+> **Rate-limit your own "send a code" endpoint.** The ceiling protects one code, not the
+> identifier. Somebody who can make your app issue codes repeatedly gets a fresh allowance
+> each time, so the ceiling only bites if issuance is bounded too. tokenzy does not do that
+> for you — it does not know who is asking, only which backend called it.
+
+### Manage codes (admin scope)
+
+```http
+GET    /v1/manage/otps?status=active&type=password_reset&identifier=user@&limit=50&cursor=…
+GET    /v1/manage/otps/{id}
+POST   /v1/manage/otps/{id}/revoke
+DELETE /v1/manage/otps/{id}
+```
+
+Listings carry no code. The single-record endpoint does, and reading it does not spend
+anything — a code inspected here is exactly as usable afterwards.
+
+### Status
+
+| status | when |
+|---|---|
+| `revoked` | somebody cancelled it |
+| `consumed` | it was used |
+| `expired` | its lifetime ran out |
+| `locked` | it ran out of attempts |
+| `active` | none of the above |
+
+### Identifiers are personal data
+
+An identifier is usually an email address or a phone number. That shapes three things:
+
+- Dead codes are swept after **24 hours** by default, shorter than either token window.
+  Keeping a spent code is keeping somebody's contact details for nothing.
+- Nothing logs an identifier. `otp.MaskIdentifier` exists for the day something wants to.
+- Codes carry no webhook events, so no identifier leaves the service that way.
+
 ## Webhooks
 
 Per environment, configured in the panel. Events:
@@ -360,12 +516,13 @@ Session-cookie auth, `SameSite=Lax`, argon2id password hashing. Light and dark t
 /ui/projects
 /ui/p/{slug}                        environments
 /ui/p/{slug}/{env}/tokens           list, filter, issue, inspect, revoke
+/ui/p/{slug}/{env}/otps             the same, plus search by type and identifier
 /ui/p/{slug}/{env}/keys             create and revoke API keys
 /ui/p/{slug}/{env}/webhooks         webhooks and delivery history
 ```
 
-The token list shows prefixes and status only. Opening a row shows the payload and a
-**Show token** button — the plaintext is fetched by a separate request when you click, so
+The token list shows prefixes and status only; the code list shows attempt counters and no
+digits at all. Opening a row shows a **Show token** / **Show code** button — the plaintext is fetched by a separate request when you click, so
 until then it is not in the page at all. Not hidden with CSS: absent.
 
 Filter chips are real URLs, so a filtered view can be bookmarked and shared. Paging is by
@@ -377,13 +534,18 @@ happens on the server, so the form works with JavaScript switched off and the ce
 enforced in one place; the browser only saves you a round trip. A rejected submission comes
 back with everything you typed still in it.
 
-## Storage: tokens are kept in plaintext
+## Storage: tokens and codes are kept in plaintext
 
-API keys are hashed. **Tokens are not** — the database holds the real value.
+API keys are hashed. **Tokens and one-time codes are not** — the database holds the real
+values.
 
-This is a deliberate trade. A token is often something a human carries: a link, a code, a
-pass to be printed as a QR. Being able to show it again from the panel — reprint the pass,
-resend the link — is worth having, and hashing would make it impossible.
+This is a deliberate trade. A token is often something a human carries: a link, a pass to
+be printed as a QR. Being able to show it again from the panel — reprint the pass, resend
+the link — is worth having, and hashing would make it impossible.
+
+For codes the argument is stronger still: a hashed code could not be resent at all, and a
+"send it again" button that produces a *different* code every time is a button that
+confuses everybody who presses it.
 
 What that buys has to be paid for, and these are not optional:
 
@@ -395,7 +557,7 @@ What that buys has to be paid for, and these are not optional:
 - **Webhooks never carry it.** The delivery shape has no field for it.
 - **The database file and every backup of it are secret material.** The file is created
   0600 and the container's `/data` is 0700, but nothing here can permission your backups.
-  Do that yourself.
+  Do that yourself. The OTP table adds personal data to what is in there.
 - **Retention is enforced, and short.** A cleanup job deletes tokens that are finished
   with, so a spent secret does not sit in the file forever. It is hygiene, not
   housekeeping — which is why the defaults are a day or three rather than weeks.
@@ -453,6 +615,12 @@ Covering, among other things:
 - listings and webhook deliveries containing no plaintext token, checked against the bytes
 - cursor paging visiting every token exactly once
 - webhook signatures verifying, retries being scheduled, and delivered events not re-sent
+- a resend returning the same code without extending its expiry
+- the attempt ceiling locking a code, after which the **correct** code is refused too
+- a code being refused for the right digits under the wrong `type`
+- 50 concurrent validations of one correct code producing exactly one success
+- 20 concurrent issuances for one identifier producing exactly one code
+- generated codes keeping their leading zeros
 - custom webhook headers reaching the receiver without being able to displace the signature
 - lifetime units converting exactly, and "9999999999999999 days" being refused rather than
   overflowing into a token that never expires

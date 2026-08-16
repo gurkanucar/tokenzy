@@ -484,3 +484,223 @@
   {{end}}
 </div>
 {{end}}
+
+
+{{define "otps_panel"}}
+<div id="otps-panel">
+  {{if .Error}}<div class="banner error">{{.Error}}</div>{{end}}
+
+  {{if .NewCode}}
+  <div class="banner {{if .Reused}}success reused{{else}}success{{end}} key-reveal">
+    {{if .Reused}}
+    <strong>Existing code returned.</strong>
+    <p>A code was already live for this identifier, so that one came back rather than a
+      new one — send this and the person will not end up holding two. Its expiry is
+      unchanged: resending does not extend a code's life.</p>
+    {{else}}
+    <strong>Code issued.</strong>
+    <p>Send this to the identifier it was issued for. You can show it again from the row
+      below until it is used or expires.</p>
+    {{end}}
+    <div class="key-value">
+      <code class="code-value">{{.NewCode}}</code>
+      <button class="btn btn-sm" type="button" onclick="copyText(this, {{.NewCode}})">Copy</button>
+    </div>
+    <p class="muted">id <code>{{.NewCodeID}}</code></p>
+  </div>
+  {{end}}
+
+  <form class="card create-form column" hx-post="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/otps"
+        hx-target="#otps-panel" hx-swap="outerHTML" data-max-ttl="{{.MaxTTLSeconds}}">
+    {{/* The active listing filter rides along, so issuing a code does not throw
+         away the search the operator was looking at. */}}
+    <input type="hidden" name="status" value="{{.Filter.Status}}">
+    <input type="hidden" name="filterType" value="{{.Filter.Type}}">
+    <input type="hidden" name="filterIdentifier" value="{{.Filter.Identifier}}">
+
+    <div class="row tight">
+      <div class="field">
+        <label for="no-type">Type</label>
+        <input id="no-type" name="type" value="{{.Form.Type}}" required
+               pattern="[a-z0-9_]{1,64}" autocomplete="off"
+               title="lowercase letters, digits and underscores">
+      </div>
+      <div class="field grow">
+        <label for="no-identifier">Identifier</label>
+        <input id="no-identifier" name="identifier" value="{{.Form.Identifier}}" required
+               placeholder="user@example.com" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="no-length">Digits</label>
+        <input id="no-length" class="num" name="length" type="number"
+               min="{{.MinLength}}" max="{{.MaxLength}}" value="{{.Form.Length}}"
+               autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="no-ttl">Lifetime</label>
+        <div class="combo">
+          <input id="no-ttl" class="num" name="ttlValue" type="number" min="1"
+                 value="{{.Form.TTLValue}}" required autocomplete="off"
+                 oninput="updateLifetime(this.form)">
+          <select name="ttlUnit" aria-label="Lifetime unit" onchange="updateLifetime(this.form)">
+            {{$unit := .Form.TTLUnit}}
+            {{range .TTLUnits}}
+            <option value="{{.Name}}" data-seconds="{{.Seconds}}"
+                    {{if eq .Name $unit}}selected{{end}}>{{.Plural}}</option>
+            {{end}}
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="no-attempts">Attempts</label>
+        <input id="no-attempts" class="num" name="maxAttempts" type="number"
+               min="{{.MinAttempts}}" max="{{.MaxAttempts}}" value="{{.Form.MaxAttempts}}"
+               autocomplete="off">
+      </div>
+      <div class="field">
+        <span class="label-spacer" aria-hidden="true"></span>
+        <button class="btn btn-primary" type="submit">Issue code</button>
+      </div>
+    </div>
+
+    <p class="hint lifetime-hint">Ceiling: {{.MaxTTLLabel}} · a live code for the same type and
+      identifier is returned instead of a new one</p>
+  </form>
+
+  <div class="filter-bar">
+    <div class="chips">
+      {{range .Chips}}
+      <a class="chip {{if .Active}}active{{end}}" href="{{.URL}}"
+         hx-get="{{.URL}}" hx-target="#otps-panel" hx-swap="outerHTML" hx-push-url="true">
+        {{.Label}} <span class="chip-count">{{.Count}}</span>
+      </a>
+      {{end}}
+    </div>
+
+    {{/* Searching by identifier is how somebody answers "did this person ever
+         get a code, and what happened to it". */}}
+    <form class="search" hx-get="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/otps"
+          hx-target="#otps-panel" hx-swap="outerHTML" hx-push-url="true"
+          hx-trigger="submit, keyup changed delay:300ms from:find input[name=identifier], change from:find select">
+      <input type="hidden" name="status" value="{{.Filter.Status}}">
+      <select name="type" aria-label="Filter by type">
+        <option value="">any type</option>
+        {{$active := .Filter.Type}}
+        {{range .Types}}
+        <option value="{{.}}" {{if eq . $active}}selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+      <input type="search" name="identifier" value="{{.Filter.Identifier}}" autocomplete="off"
+             placeholder="Search identifier…" aria-label="Search by identifier">
+    </form>
+  </div>
+
+  <div class="table-scroll">
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Type</th><th>Identifier</th><th>Status</th><th>Attempts</th>
+        <th>Expires</th><th>Created</th><th class="right">Actions</th>
+      </tr>
+    </thead>
+    {{template "otp_rows" .}}
+  </table>
+  </div>
+</div>
+{{end}}
+
+
+{{define "otp_rows"}}
+{{range .Rows}}{{template "otp_group" .}}{{end}}
+
+{{if .MoreURL}}
+<tbody id="otp-more">
+  <tr>
+    <td colspan="7" class="center">
+      <button class="btn btn-sm" type="button"
+              hx-get="{{.MoreURL}}" hx-target="#otp-more" hx-swap="outerHTML">Load more</button>
+    </td>
+  </tr>
+</tbody>
+{{else if not .Rows}}
+<tbody>
+  <tr><td colspan="7" class="empty">
+    {{if .Filter.Status}}No {{.Filter.Status}} codes match.{{else}}No codes in this environment yet.{{end}}
+  </td></tr>
+</tbody>
+{{end}}
+{{end}}
+
+
+{{define "otp_group"}}
+{{$q := .Filter.Query}}
+<tbody id="otp-{{.OTP.ID}}" class="token-group {{if .Detail}}expanded{{end}}">
+  <tr>
+    <td><code class="key">{{.OTP.Type}}</code></td>
+    <td class="identifier">{{.OTP.Identifier}}</td>
+    <td><span class="badge otp-{{.Status}}">{{.Status}}</span></td>
+    <td class="muted attempts {{if ge .OTP.AttemptCount .OTP.MaxAttempts}}spent{{end}}">{{.Attempts}}</td>
+    <td class="muted">{{.Expires}}</td>
+    <td class="muted">{{.Created}}</td>
+    <td class="right">
+      {{if .Detail}}
+      <button class="btn btn-ghost btn-sm"
+              hx-get="/ui/p/{{.Project}}/{{.Env}}/otps/{{.OTP.ID}}/row{{$q}}"
+              hx-target="closest tbody" hx-swap="outerHTML">Hide</button>
+      {{else}}
+      <button class="btn btn-ghost btn-sm"
+              hx-get="/ui/p/{{.Project}}/{{.Env}}/otps/{{.OTP.ID}}{{$q}}"
+              hx-target="closest tbody" hx-swap="outerHTML">Details</button>
+      {{end}}
+      {{if not .OTP.RevokedAt}}
+      <button class="btn btn-danger btn-sm"
+              hx-post="/ui/p/{{.Project}}/{{.Env}}/otps/{{.OTP.ID}}/revoke{{$q}}"
+              hx-confirm="Revoke this code? It will stop working immediately."
+              hx-target="closest tbody" hx-swap="outerHTML">Revoke</button>
+      {{end}}
+    </td>
+  </tr>
+
+  {{with .Detail}}
+  <tr class="detail-row">
+    <td colspan="7">
+      <div class="detail">
+        <div class="detail-block">
+          <h4>Code</h4>
+          {{if .Code}}
+          <div class="key-value">
+            <code class="code-value">{{.Code}}</code>
+            <button class="btn btn-sm" type="button" onclick="copyText(this, {{.Code}})">Copy</button>
+          </div>
+          {{else}}
+          <p class="muted">Not loaded. It is fetched only when you ask, so it is not sitting
+            in this page waiting to be read over your shoulder.</p>
+          <button class="btn btn-sm" type="button"
+                  hx-get="/ui/p/{{$.Project}}/{{$.Env}}/otps/{{$.OTP.ID}}/reveal{{$q}}"
+                  hx-target="closest tbody" hx-swap="outerHTML">Show code</button>
+          {{end}}
+        </div>
+
+        <div class="detail-block">
+          <h4>Record</h4>
+          <dl class="facts">
+            <dt>id</dt><dd><code>{{$.OTP.ID}}</code></dd>
+            <dt>type</dt><dd><code>{{$.OTP.Type}}</code></dd>
+            <dt>identifier</dt><dd>{{$.OTP.Identifier}}</dd>
+            <dt>status</dt><dd>{{$.Status}}</dd>
+            <dt>attempts</dt><dd>{{$.Attempts}}</dd>
+            <dt>expires</dt><dd>{{$.Expires}}</dd>
+            <dt>created</dt><dd>{{$.Created}}</dd>
+            <dt>settled</dt><dd>{{$.Settled}}</dd>
+          </dl>
+          <button class="btn btn-danger btn-sm"
+                  hx-delete="/ui/p/{{$.Project}}/{{$.Env}}/otps/{{$.OTP.ID}}{{$q}}"
+                  hx-confirm="Delete this record entirely? Revoking stops the code and keeps its history; deleting throws the history away."
+                  hx-target="#otps-panel" hx-swap="outerHTML">Delete record</button>
+        </div>
+      </div>
+    </td>
+  </tr>
+  {{end}}
+</tbody>
+{{end}}

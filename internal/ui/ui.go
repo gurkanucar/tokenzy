@@ -16,6 +16,7 @@ import (
 	"tokenzy/internal/auth"
 	"tokenzy/internal/db"
 	"tokenzy/internal/model"
+	"tokenzy/internal/otp"
 	"tokenzy/internal/token"
 	"tokenzy/internal/webhook"
 )
@@ -29,15 +30,17 @@ var pageFiles = []string{
 	"projects.html",
 	"project.html",
 	"tokens.html",
+	"otps.html",
 	"keys.html",
 	"webhooks.html",
 }
 
 // Server holds the parsed template sets and the dependencies handlers need.
 type Server struct {
-	db       *db.DB
-	sessions *auth.Sessions
-	limits   token.Limits
+	db        *db.DB
+	sessions  *auth.Sessions
+	limits    token.Limits
+	otpLimits otp.Limits
 	// webhooks powers the panel's Test button. Nil when delivery is not running.
 	webhooks *webhook.Dispatcher
 
@@ -54,14 +57,15 @@ type Server struct {
 // actually fetched rather than served from a browser cache that was told it
 // could keep the old one for an hour.
 func New(database *db.DB, sessions *auth.Sessions, dispatcher *webhook.Dispatcher,
-	limits token.Limits, files fs.FS, assetVersion string) (*Server, error) {
+	limits token.Limits, otpLimits otp.Limits, files fs.FS, assetVersion string) (*Server, error) {
 
 	s := &Server{
-		db:       database,
-		sessions: sessions,
-		limits:   limits,
-		webhooks: dispatcher,
-		pages:    make(map[string]*template.Template, len(pageFiles)),
+		db:        database,
+		sessions:  sessions,
+		limits:    limits,
+		otpLimits: otpLimits,
+		webhooks:  dispatcher,
+		pages:     make(map[string]*template.Template, len(pageFiles)),
 	}
 
 	funcs := template.FuncMap{
@@ -120,6 +124,16 @@ func (s *Server) Register(mux *http.ServeMux) {
 	protected.HandleFunc("GET /ui/p/{slug}/{env}/tokens/{id}/reveal", s.revealToken)
 	protected.HandleFunc("POST /ui/p/{slug}/{env}/tokens/{id}/revoke", s.revokeToken)
 	protected.HandleFunc("DELETE /ui/p/{slug}/{env}/tokens/{id}", s.deleteToken)
+
+	// One-time codes.
+	protected.HandleFunc("GET /ui/p/{slug}/{env}/otps", s.otpsPage)
+	protected.HandleFunc("POST /ui/p/{slug}/{env}/otps", s.createOTP)
+	protected.HandleFunc("GET /ui/p/{slug}/{env}/otps/rows", s.otpRows)
+	protected.HandleFunc("GET /ui/p/{slug}/{env}/otps/{id}", s.otpDetail)
+	protected.HandleFunc("GET /ui/p/{slug}/{env}/otps/{id}/row", s.otpRow)
+	protected.HandleFunc("GET /ui/p/{slug}/{env}/otps/{id}/reveal", s.revealOTP)
+	protected.HandleFunc("POST /ui/p/{slug}/{env}/otps/{id}/revoke", s.revokeOTP)
+	protected.HandleFunc("DELETE /ui/p/{slug}/{env}/otps/{id}", s.deleteOTP)
 
 	// API keys.
 	protected.HandleFunc("GET /ui/p/{slug}/{env}/keys", s.keysPage)
