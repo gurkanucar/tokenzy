@@ -1,0 +1,145 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · tokenzy</title>
+<link rel="stylesheet" href="/static/app.css">
+{{/* Inline so the browser never issues a /favicon.ico request. */}}
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='4' fill='%237c3aed'/><circle cx='6' cy='8' r='2.4' fill='none' stroke='white' stroke-width='1.5'/><path d='M8.4 8H13M11 8v2.4M12.6 8v1.8' stroke='white' stroke-width='1.5' stroke-linecap='round'/></svg>">
+{{/* The panel is never indexed and never linked from anywhere public; this
+     keeps a misconfigured proxy from putting a token page in a search index. */}}
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="same-origin">
+<script>
+// Applied before first paint so switching themes never flashes.
+(function () {
+  try {
+    var t = localStorage.getItem('tokenzy-theme');
+    if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="/ui/projects">tokenzy</a>
+
+  {{if .Project}}
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <a href="/ui/p/{{.Project.Slug}}">{{.Project.Name}}</a>
+    {{if .Env}}
+      <span class="sep">/</span>
+      <span class="env-pill">{{.Env.Slug}}</span>
+    {{end}}
+  </nav>
+  {{end}}
+
+  <div class="spacer"></div>
+
+  <button class="icon-btn" type="button" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme">
+    <span class="only-light">☾</span><span class="only-dark">☀</span>
+  </button>
+
+  {{if .User}}
+  <form method="post" action="/ui/logout" class="inline">
+    <span class="who">{{.User}}</span>
+    <button class="btn btn-ghost" type="submit">Sign out</button>
+  </form>
+  {{end}}
+</header>
+
+{{if .Env}}
+<nav class="tabs">
+  <a class="tab {{if eq .Tab "tokens"}}active{{end}}"   href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/tokens">Tokens</a>
+  <a class="tab {{if eq .Tab "keys"}}active{{end}}"     href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/keys">API keys</a>
+  <a class="tab {{if eq .Tab "webhooks"}}active{{end}}" href="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/webhooks">Webhooks</a>
+
+  {{if .Envs}}
+  <div class="env-switch">
+    <label for="env-select">Environment</label>
+    <select id="env-select" onchange="switchEnv(this.value)">
+      {{range .Envs}}
+      <option value="{{.Slug}}" {{if eq .Slug $.Env.Slug}}selected{{end}}>{{.Slug}}</option>
+      {{end}}
+    </select>
+  </div>
+  {{end}}
+</nav>
+{{end}}
+
+<main class="page">
+  {{template "content" .}}
+</main>
+
+<script src="/static/htmx.min.js"></script>
+<script>
+// 422 carries a rendered fragment (the rejected input, with the message), so it
+// must be swapped in rather than treated as a plain error.
+htmx.config.responseHandling = [
+  {code: '204', swap: false},
+  {code: '[23]..', swap: true},
+  {code: '422', swap: true},
+  {code: '[45]..', swap: false, error: true}
+];
+
+function toggleTheme() {
+  var root = document.documentElement;
+  var current = root.getAttribute('data-theme');
+  if (!current) {
+    current = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  var next = current === 'dark' ? 'light' : 'dark';
+  root.setAttribute('data-theme', next);
+  try { localStorage.setItem('tokenzy-theme', next); } catch (e) {}
+}
+
+function switchEnv(slug) {
+  var parts = window.location.pathname.split('/');
+  // /ui/p/{project}/{env}/{tab}
+  if (parts.length >= 6) {
+    parts[4] = slug;
+    window.location.pathname = parts.join('/');
+  }
+}
+
+// Keep Save disabled while the payload does not parse. The server validates
+// too — this only saves a round trip to be told what the browser already knew.
+function validateJSON(el) {
+  var form = el.closest('form');
+  var btn = form.querySelector('button[type=submit]');
+  var msg = form.querySelector('.json-error');
+  try {
+    JSON.parse(el.value);
+    el.classList.remove('invalid');
+    btn.disabled = false;
+    msg.textContent = '';
+  } catch (e) {
+    el.classList.add('invalid');
+    btn.disabled = true;
+    msg.textContent = 'Invalid JSON: ' + e.message;
+  }
+}
+
+// A ready-to-run redemption for the token that was just issued. location.origin
+// so it matches however this panel is being reached.
+function copyConsumeCurl(btn, token) {
+  copyText(btn,
+    'curl -X POST ' + window.location.origin + '/v1/consume \\\n' +
+    '  -H "X-App-Key: <YOUR_CONSUME_KEY>" \\\n' +
+    '  -H "Content-Type: application/json" \\\n' +
+    '  -d \'{"token": "' + token + '"}\'');
+}
+
+function copyText(btn, text) {
+  navigator.clipboard.writeText(text).then(function () {
+    var old = btn.textContent;
+    btn.textContent = 'Copied';
+    setTimeout(function () { btn.textContent = old; }, 1500);
+  });
+}
+</script>
+</body>
+</html>
+{{end}}

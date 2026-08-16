@@ -1,0 +1,6 @@
+{{define "content"}}
+<h1 class="page-title">{{.Project.Name}}</h1>
+<p class="muted">Environments. Tokens, API keys and webhooks all belong to one of these,
+  and an API key can never reach across to another.</p>
+{{template "envs_panel" .}}
+{{end}}

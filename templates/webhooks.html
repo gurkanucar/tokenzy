@@ -1,0 +1,9 @@
+{{define "content"}}
+<h1 class="page-title">Webhooks</h1>
+<p class="muted">Fired when a token in <code>{{.Env.Slug}}</code> is issued, redeemed, spent or revoked.
+  The body is signed with <code>X-Webhook-Signature: sha256=HMAC(secret, body)</code>; verify it against
+  the raw bytes before parsing. Failed deliveries are retried immediately, then after 30s, 2m and 10m.</p>
+<p class="muted"><strong>The token itself is never sent.</strong> A delivery carries the id, the prefix
+  and the metadata — enough to correlate, useless to an interceptor.</p>
+{{template "webhooks_panel" .}}
+{{end}}

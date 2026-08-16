@@ -1,0 +1,513 @@
+/* tokenzy admin panel — hand-written, no framework, no external requests.
+ *
+ * Design rules this file sticks to, so controls do not drift apart:
+ *   - Three control heights only: --control-h (form fields, primary buttons),
+ *     --control-h-sm (toolbar controls), --pill-h (pills inside dense tables).
+ *   - Two corner radii: --radius for surfaces, --radius-sm for controls.
+ *     Pills are the only fully-round things.
+ *   - Every pill (badge, chip, env) derives from one base rule, so they share
+ *     size, weight and border treatment and differ only in colour.
+ */
+
+:root {
+  --bg:        #f6f7f9;
+  --surface:   #ffffff;
+  --surface-2: #f0f2f5;
+  --fg:        #1a1d21;
+  --fg-muted:  #6b7280;
+  --border:    #dfe3e8;
+  --accent:    #7c3aed;
+  --accent-fg: #ffffff;
+  --danger:    #dc2626;
+  --success:   #059669;
+  --warning:   #b45309;
+  --warn-bg:   #fef2f2;
+  --ok-bg:     #ecfdf5;
+  --hold-bg:   #fffbeb;
+  --shadow:    0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .10);
+  --focus:     0 0 0 3px rgba(124, 58, 237, .25);
+
+  --radius:    10px;
+  --radius-sm: 7px;
+  --mono:      ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --control-h:    34px;
+  --control-h-sm: 28px;
+  --pill-h:       22px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #0e1116;
+    --surface:   #161b22;
+    --surface-2: #1c232c;
+    --fg:        #e5e7eb;
+    --fg-muted:  #9299a5;
+    --border:    #2a323d;
+    --accent:    #a78bfa;
+    --accent-fg: #16101f;
+    --danger:    #f87171;
+    --success:   #34d399;
+    --warning:   #fbbf24;
+    --warn-bg:   #2a1618;
+    --ok-bg:     #10241d;
+    --hold-bg:   #2a2213;
+    --shadow:    0 1px 2px rgba(0, 0, 0, .40);
+    --focus:     0 0 0 3px rgba(167, 139, 250, .35);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #0e1116;
+  --surface:   #161b22;
+  --surface-2: #1c232c;
+  --fg:        #e5e7eb;
+  --fg-muted:  #9299a5;
+  --border:    #2a323d;
+  --accent:    #a78bfa;
+  --accent-fg: #16101f;
+  --danger:    #f87171;
+  --success:   #34d399;
+  --warning:   #fbbf24;
+  --warn-bg:   #2a1618;
+  --ok-bg:     #10241d;
+  --hold-bg:   #2a2213;
+  --shadow:    0 1px 2px rgba(0, 0, 0, .40);
+  --focus:     0 0 0 3px rgba(167, 139, 250, .35);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, .key { font-family: var(--mono); font-size: .88em; }
+
+.muted { color: var(--fg-muted); }
+.spacer { flex: 1; }
+.right { text-align: right; }
+.center { text-align: center; }
+
+/* ---------- top bar ---------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.brand { font-weight: 700; letter-spacing: -.02em; color: var(--fg); font-size: 17px; }
+.brand:hover { text-decoration: none; color: var(--accent); }
+
+.crumbs { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.crumbs .sep { color: var(--fg-muted); }
+
+.who { color: var(--fg-muted); font-size: 13px; margin-right: 4px; }
+.inline { display: flex; align-items: center; gap: 8px; margin: 0; }
+
+.only-dark { display: none; }
+:root[data-theme="dark"] .only-dark { display: inline; }
+:root[data-theme="dark"] .only-light { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .only-dark { display: inline; }
+  :root:not([data-theme="light"]) .only-light { display: none; }
+}
+
+/* ---------- tabs ---------- */
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  padding: 10px 14px;
+  color: var(--fg-muted);
+  border-bottom: 2px solid transparent;
+  font-size: 14px;
+  font-weight: 500;
+}
+.tab:hover { color: var(--fg); text-decoration: none; }
+.tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+
+.env-switch { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.env-switch label { color: var(--fg-muted); }
+.env-switch select { width: auto; min-width: 120px; height: var(--control-h-sm); }
+
+/* ---------- layout ---------- */
+
+/* Full width on purpose: these are dense tables and JSON editors, and the
+   horizontal room is worth more than a centred column. */
+.page { width: 100%; margin: 0; padding: 24px 24px 64px; }
+.page-title { font-size: 22px; margin: 0 0 4px; letter-spacing: -.01em; }
+.page-title + .muted { margin-top: 0; margin-bottom: 8px; }
+.page-title ~ .muted { max-width: 100ch; }
+.page-title ~ .muted:last-of-type { margin-bottom: 18px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.card header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.card-title { font-weight: 600; font-size: 16px; color: var(--fg); }
+.card footer { margin-top: 10px; font-size: 12px; }
+
+.project-card .env-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+/* ---------- forms ---------- */
+
+.create-form { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.create-form.column { display: block; }
+.create-form .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+
+.field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+.create-form .field { margin-bottom: 0; }
+.create-form.column .field { margin-bottom: 14px; }
+.field.grow { flex: 1; min-width: 180px; }
+/* Puts a button on the same baseline as the inputs beside it. */
+.field.bottom { justify-content: flex-end; align-items: flex-start; }
+
+.field label, .card form label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.hint { font-size: 12px; color: var(--fg-muted); margin: 2px 0 0; line-height: 1.5; max-width: 70ch; }
+
+.checks { display: flex; flex-wrap: wrap; gap: 14px; padding: 4px 0; }
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--fg);
+  cursor: pointer;
+}
+.check input { width: auto; height: auto; margin: 0; accent-color: var(--accent); }
+
+/* One rule for every text-like control. input[type=search] and input[type=number]
+   are listed explicitly: neither is covered by input:not([type]), and leaving
+   one out is what makes a single field render with the browser's default chrome
+   while everything around it is styled. */
+input[type="text"],
+input[type="password"],
+input[type="search"],
+input[type="number"],
+input:not([type]),
+select,
+textarea {
+  font: inherit;
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  height: var(--control-h);
+  padding: 0 10px;
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+select {
+  padding-right: 28px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%),
+                    linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 51%, calc(100% - 10px) 51%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+textarea {
+  height: auto;
+  padding: 10px;
+  font-family: var(--mono);
+  font-size: 13px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+input:focus-visible, select:focus-visible, textarea:focus-visible,
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+textarea.invalid { border-color: var(--danger); }
+textarea.invalid:focus { box-shadow: 0 0 0 3px rgba(220, 38, 38, .22); }
+
+.json-error { color: var(--danger); font-size: 12px; min-height: 16px; margin-top: 4px; }
+
+/* ---------- buttons ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  height: var(--control-h);
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { border-color: var(--fg-muted); }
+.btn:focus-visible { outline: none; box-shadow: var(--focus); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn:disabled:hover { border-color: var(--border); }
+
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.btn-primary:hover { filter: brightness(1.08); border-color: var(--accent); }
+
+.btn-danger { background: transparent; color: var(--danger); }
+.btn-danger:hover { background: var(--warn-bg); border-color: var(--danger); }
+
+.btn-ghost { background: transparent; }
+
+.btn-sm { height: var(--control-h-sm); padding: 0 11px; font-size: 13px; }
+.btn.block { width: 100%; }
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--control-h);
+  width: var(--control-h);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+.icon-btn:hover { background: var(--surface-2); }
+.icon-btn:focus-visible { outline: none; box-shadow: var(--focus); }
+
+/* ---------- pills: badge / chip / env ---------- */
+
+.badge, .chip, .env-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: var(--pill-h);
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.badge.ok    { color: var(--success); background: var(--ok-bg);   border-color: transparent; }
+.badge.off   { color: var(--danger);  background: var(--warn-bg); border-color: transparent; }
+.badge.warn  { color: var(--warning); background: var(--hold-bg); border-color: transparent; }
+
+/* Token status. Four states, four readings: green is usable, amber is a clock
+   that ran out, grey is a pass that did its job, red is somebody stepping in. */
+.badge.status-active    { color: var(--success); background: var(--ok-bg);   border-color: transparent; }
+.badge.status-expired   { color: var(--warning); background: var(--hold-bg); border-color: transparent; }
+.badge.status-exhausted { color: var(--fg-muted); }
+.badge.status-revoked   { color: var(--danger);  background: var(--warn-bg); border-color: transparent; }
+
+.badge.scope-write, .badge.scope-admin { color: var(--accent); }
+
+.env-pill { color: var(--fg); }
+a.env-pill:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+/* ---------- tables ---------- */
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+table.data th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--fg-muted);
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+
+table.data td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.data tbody:last-child tr:last-child td { border-bottom: none; }
+
+table.data .key { display: inline-block; overflow-wrap: anywhere; }
+
+/* Timestamps are fixed width; wrapping them onto three lines helps nobody. */
+table.data td.muted { white-space: nowrap; }
+
+table.data.compact { box-shadow: none; margin-top: 12px; }
+table.data.compact th, table.data.compact td { padding: 6px 10px; font-size: 13px; }
+
+tr.revoked { opacity: .55; }
+.empty { color: var(--fg-muted); text-align: center; padding: 24px; }
+
+/* ---------- token rows ---------- */
+
+.token-group.expanded > tr:first-child > td { background: var(--surface-2); }
+.token-group.expanded > tr:first-child > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+
+.detail-row > td { background: var(--surface-2); padding: 0 14px 16px; }
+
+.detail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+.detail-block h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--fg-muted);
+}
+
+.payload {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  /* A long payload scrolls inside its block; it never widens the table. */
+  overflow-x: auto;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0 0 12px; }
+.facts dt { color: var(--fg-muted); font-size: 12px; }
+.facts dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+
+/* ---------- banners ---------- */
+
+.banner {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 14px;
+  font-size: 14px;
+}
+.banner.error   { background: var(--warn-bg); color: var(--danger); }
+.banner.success { background: var(--ok-bg);   color: var(--success); }
+.banner p { margin: 6px 0; color: var(--fg); }
+.banner p.muted { color: var(--fg-muted); font-size: 13px; }
+
+.key-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 8px 7px 12px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.key-value code { flex: 1; min-width: 20ch; word-break: break-all; color: var(--fg); }
+.key-value.inline-secret { margin-top: 0; padding: 3px 4px 3px 8px; }
+
+/* ---------- filter bar ---------- */
+
+/* A toolbar attached to the listing below it, rather than controls floating
+   loose on the page background. */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  margin-bottom: 14px;
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.chip { height: var(--control-h-sm); padding: 0 12px; cursor: pointer; }
+.chip:hover { color: var(--fg); border-color: var(--accent); text-decoration: none; }
+.chip:focus-visible { outline: none; box-shadow: var(--focus); }
+.chip.active { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+
+.chip-count { opacity: .7; font-variant-numeric: tabular-nums; }
+
+/* ---------- webhooks ---------- */
+
+.webhook-card.disabled { opacity: .65; }
+.webhook-card header .key { overflow-wrap: anywhere; }
+
+/* ---------- login ---------- */
+
+.login-wrap { display: flex; justify-content: center; padding-top: 8vh; }
+.login-card { width: 100%; max-width: 360px; }
+.login-card h1 { margin: 0; font-size: 24px; letter-spacing: -.02em; }
+.login-card .muted { margin-top: 4px; margin-bottom: 20px; }
+.login-card .hint { margin-top: 16px; }
+
+/* ---------- htmx ---------- */
+
+.htmx-request { opacity: .6; transition: opacity .1s ease; }

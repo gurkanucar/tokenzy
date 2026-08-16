@@ -1,0 +1,65 @@
+# Deployment shape, following the convention Dokploy/Coolify templates use:
+# the platform's reverse proxy (Traefik) routes to the container port, so
+# nothing is published on the host, and configuration arrives as environment
+# variables the platform injects.
+#
+# For local use, layer the ports file on top:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+
+services:
+  tokenzy:
+    build: .
+    image: tokenzy:latest
+    restart: unless-stopped
+
+    # No host port: the platform's proxy reaches the container on 8080. Set the
+    # service port to 8080 in the platform UI when adding a domain.
+    expose:
+      - 8080
+
+    environment:
+      # Set these in the platform's Environment settings. Both must be given
+      # together; with neither set the service starts without an admin account
+      # and logs a warning, rather than failing or inventing a default password.
+      TOKENZY_ADMIN_USERNAME: ${TOKENZY_ADMIN_USERNAME:-}
+      TOKENZY_ADMIN_PASSWORD: ${TOKENZY_ADMIN_PASSWORD:-}
+      # Prefer this over the password above where the platform can mount secrets
+      # as files: it keeps the secret out of the process environment.
+      TOKENZY_ADMIN_PASSWORD_FILE: ${TOKENZY_ADMIN_PASSWORD_FILE:-}
+      # Set to 0 for a real deployment. A demo project on an empty database
+      # makes a wiped volume look like a healthy fresh install.
+      TOKENZY_SEED_DATA: ${TOKENZY_SEED_DATA:-1}
+
+      # Longest lifetime a caller may request.
+      TOKENZY_MAX_TTL: ${TOKENZY_MAX_TTL:-2160h}
+      # Retention. These are not housekeeping: tokens are stored in plaintext,
+      # so a row kept past its usefulness is a secret kept for no reason.
+      TOKENZY_RETENTION_EXPIRED: ${TOKENZY_RETENTION_EXPIRED:-168h}
+      TOKENZY_RETENTION_CONSUMED: ${TOKENZY_RETENTION_CONSUMED:-720h}
+      TOKENZY_RETENTION_DELIVERIES: ${TOKENZY_RETENTION_DELIVERIES:-168h}
+
+    # The SQLite database lives here, and this line is what keeps it. Without a
+    # volume mounted at /data, every container recreation — which is what most
+    # platforms do on redeploy — starts from an empty database, so every token
+    # ever issued stops working.
+    #
+    # This volume is secret material. Back it up, and treat the backups the way
+    # you would treat a password file.
+    volumes:
+      - tokenzy-data:/data
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  tokenzy-data:

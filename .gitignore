@@ -1,0 +1,18 @@
+# Compiled binary
+/tokenzy
+
+# SQLite database and WAL files.
+#
+# These hold tokens in plaintext. Committing one would publish live secrets, so
+# this entry is doing more work than a normal build-artifact ignore.
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets live here: the template (.env.example) is committed, the file is not
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store

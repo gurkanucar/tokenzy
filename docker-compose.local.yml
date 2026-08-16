@@ -1,0 +1,14 @@
+# Local overlay: publishes the port on the host and reads .env from the repo.
+# Deployment platforms put a proxy in front instead, so this stays out of the
+# main file. Deliberately not named docker-compose.override.yml — that name is
+# merged automatically, and it would then publish a host port on the server too.
+#
+#   cp .env.example .env
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+
+services:
+  tokenzy:
+    ports:
+      - "${TOKENZY_PORT:-8080}:8080"
+    env_file:
+      - .env

@@ -1,0 +1,25 @@
+{{define "content"}}
+<div class="login-wrap">
+  <form class="card login-card" method="post" action="/ui/login">
+    <h1>tokenzy</h1>
+    <p class="muted">Sign in to the admin panel</p>
+
+    {{if .Error}}<div class="banner error">{{.Error}}</div>{{end}}
+
+    <div class="field">
+      <label for="username">Username</label>
+      <input id="username" name="username" value="{{.Username}}" required autofocus autocomplete="username">
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required autocomplete="current-password">
+    </div>
+
+    <button class="btn btn-primary block" type="submit">Sign in</button>
+
+    {{if .NoUsers}}
+    <p class="hint">No account exists yet. Run:<br><code>tokenzy admin-create -username admin</code></p>
+    {{end}}
+  </form>
+</div>
+{{end}}

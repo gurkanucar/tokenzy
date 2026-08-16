@@ -1,0 +1,9 @@
+{{define "content"}}
+<h1 class="page-title">API keys</h1>
+<p class="muted">Keys are bound to the <code>{{.Env.Slug}}</code> environment. A client sends one in
+  the <code>X-App-Key</code> header and never names a project or environment.</p>
+<p class="muted"><strong>consume</strong> can only redeem, and is the only scope that belongs on a
+  phone or a kiosk. <strong>write</strong> also issues tokens. <strong>admin</strong> can read any token
+  back in full, which is the same power as issuing one — keep both on a server you control.</p>
+{{template "keys_panel" .}}
+{{end}}

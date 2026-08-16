@@ -1,0 +1,438 @@
+{{/* Fragments returned directly to HTMX and also embedded in full pages. */}}
+
+{{define "projects_panel"}}
+<div id="projects-panel">
+  {{if .Error}}<div class="banner error">{{.Error}}</div>{{end}}
+
+  <form class="card create-form" hx-post="/ui/projects" hx-target="#projects-panel" hx-swap="outerHTML">
+    <div class="field">
+      <label for="np-slug">Slug</label>
+      <input id="np-slug" name="slug" placeholder="checkout" required
+             pattern="[a-z0-9][a-z0-9_-]{0,62}" autocomplete="off">
+    </div>
+    <div class="field grow">
+      <label for="np-name">Name</label>
+      <input id="np-name" name="name" placeholder="Checkout Service" required autocomplete="off">
+    </div>
+    <button class="btn btn-primary" type="submit">Add project</button>
+  </form>
+
+  {{if .Rows}}
+  <div class="grid">
+    {{range .Rows}}
+    <article class="card project-card">
+      <header>
+        <a class="card-title" href="/ui/p/{{.Project.Slug}}">{{.Project.Name}}</a>
+        <div class="spacer"></div>
+        <button class="btn btn-danger btn-sm"
+                hx-delete="/ui/p/{{.Project.Slug}}"
+                hx-confirm="{{.Project.Name}} and every token under it will be deleted. Are you sure?"
+                hx-target="#projects-panel" hx-swap="outerHTML">Delete</button>
+      </header>
+      <code class="muted">{{.Project.Slug}}</code>
+      {{$slug := .Project.Slug}}
+      <div class="env-list">
+        {{range .Envs}}
+        <a class="env-pill" href="/ui/p/{{$slug}}/{{.Slug}}/tokens">{{.Slug}}</a>
+        {{else}}
+        <span class="muted">no environments</span>
+        {{end}}
+      </div>
+      <footer class="muted">{{.Created}}</footer>
+    </article>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="empty">No projects yet. Add the first one above.</p>
+  {{end}}
+</div>
+{{end}}
+
+
+{{define "envs_panel"}}
+<div id="envs-panel">
+  {{if .Error}}<div class="banner error">{{.Error}}</div>{{end}}
+
+  <form class="card create-form" hx-post="/ui/p/{{.Project.Slug}}/environments"
+        hx-target="#envs-panel" hx-swap="outerHTML">
+    <div class="field grow">
+      <label for="ne-slug">Environment slug</label>
+      <input id="ne-slug" name="slug" placeholder="staging" required
+             pattern="[a-z0-9][a-z0-9_-]{0,62}" autocomplete="off">
+    </div>
+    <button class="btn btn-primary" type="submit">Add environment</button>
+  </form>
+
+  <table class="data">
+    <thead>
+      <tr><th>Slug</th><th>Tokens</th><th>Created</th><th class="right">Actions</th></tr>
+    </thead>
+    <tbody>
+      {{range .Rows}}
+      <tr>
+        <td><a class="env-pill" href="/ui/p/{{.Project}}/{{.Env.Slug}}/tokens">{{.Env.Slug}}</a></td>
+        <td class="muted">{{.Tokens}}</td>
+        <td class="muted">{{.Created}}</td>
+        <td class="right">
+          <button class="btn btn-danger btn-sm"
+                  hx-delete="/ui/p/{{.Project}}/{{.Env.Slug}}"
+                  hx-confirm="{{.Env.Slug}} will be deleted, along with its {{.Tokens}} token(s), its API keys and its webhooks. Are you sure?"
+                  hx-target="#envs-panel" hx-swap="outerHTML">Delete</button>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="4" class="empty">No environments.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+
+{{define "tokens_panel"}}
+<div id="tokens-panel">
+  {{if .Error}}<div class="banner error">{{.Error}}</div>{{end}}
+
+  {{if .NewToken}}
+  <div class="banner success key-reveal">
+    <strong>Token issued.</strong>
+    <p>Hand this to whoever is meant to redeem it. You can come back and show it
+      again from the row below — it is stored, not hashed.</p>
+    <div class="key-value">
+      <code>{{.NewToken}}</code>
+      <button class="btn btn-sm" type="button" onclick="copyText(this, {{.NewToken}})">Copy</button>
+      <button class="btn btn-sm" type="button" onclick="copyConsumeCurl(this, {{.NewToken}})">Copy as curl</button>
+    </div>
+    <p class="muted">id <code>{{.NewTokenID}}</code> — this is what the management API revokes by.</p>
+  </div>
+  {{end}}
+
+  <form class="card create-form column" hx-post="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/tokens"
+        hx-target="#tokens-panel" hx-swap="outerHTML">
+    <input type="hidden" name="status" value="{{.Status}}">
+    <div class="field">
+      <label for="nt-payload">Payload (JSON)</label>
+      <textarea id="nt-payload" name="payload" rows="6" spellcheck="false"
+                oninput="validateJSON(this)">{
+  "userId": "usr_123",
+  "action": "accept_invitation"
+}</textarea>
+      <div class="json-error"></div>
+      <p class="hint">Stored as given and handed back verbatim on redemption. Never
+        interpreted, so put a reference here rather than the data itself — anyone
+        who redeems the token sees all of it.</p>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="nt-ttl">Lifetime (seconds)</label>
+        <input id="nt-ttl" name="ttlSeconds" type="number" min="1" max="{{.MaxTTLSeconds}}"
+               value="900" required autocomplete="off">
+        <p class="hint">Ceiling: {{.MaxTTLSeconds}}s ({{.MaxTTLLabel}})</p>
+      </div>
+      <div class="field">
+        <label for="nt-uses">Max uses</label>
+        <input id="nt-uses" name="maxUses" type="number" min="1" placeholder="unlimited"
+               value="1" autocomplete="off">
+        <p class="hint">Leave empty for no limit. 1 means redeeming it spends it.</p>
+      </div>
+      <div class="field grow bottom">
+        <button class="btn btn-primary" type="submit">Issue token</button>
+      </div>
+    </div>
+  </form>
+
+  <div class="filter-bar">
+    <div class="chips">
+      {{range .Chips}}
+      <a class="chip {{if .Active}}active{{end}}" href="{{.URL}}"
+         hx-get="{{.URL}}" hx-target="#tokens-panel" hx-swap="outerHTML" hx-push-url="true">
+        {{.Label}} <span class="chip-count">{{.Count}}</span>
+      </a>
+      {{end}}
+    </div>
+  </div>
+
+  <table class="data tokens">
+    <thead>
+      <tr>
+        <th>Token</th><th>Status</th><th>Uses</th><th>Expires</th>
+        <th>Created</th><th>Last used</th><th class="right">Actions</th>
+      </tr>
+    </thead>
+    {{template "token_rows" .}}
+  </table>
+</div>
+{{end}}
+
+
+{{/* One page of rows plus the trigger for the next. Returned on its own when
+     "Load more" is pressed, so paging never redraws the form above. */}}
+{{define "token_rows"}}
+{{range .Rows}}{{template "token_group" .}}{{end}}
+
+{{if .MoreURL}}
+<tbody id="token-more">
+  <tr>
+    <td colspan="7" class="center">
+      <button class="btn btn-sm" type="button"
+              hx-get="{{.MoreURL}}" hx-target="#token-more" hx-swap="outerHTML">Load more</button>
+    </td>
+  </tr>
+</tbody>
+{{else if not .Rows}}
+<tbody>
+  <tr><td colspan="7" class="empty">
+    {{if .Status}}No {{.Status}} tokens in this environment.{{else}}No tokens in this environment yet.{{end}}
+  </td></tr>
+</tbody>
+{{end}}
+{{end}}
+
+
+{{/* A token is one <tbody> so that expanding and collapsing swap the same
+     element. With a plain <tr> the detail row would have nothing to belong to
+     and collapsing would leave it stranded. */}}
+{{define "token_group"}}
+<tbody id="token-{{.Token.ID}}" class="token-group {{if .Detail}}expanded{{end}}">
+  <tr>
+    <td><code class="key">{{.Token.Prefix}}…</code></td>
+    <td><span class="badge status-{{.Status}}">{{.Status}}</span></td>
+    <td class="muted">{{.Uses}}</td>
+    <td class="muted">{{.Expires}}</td>
+    <td class="muted">{{.Created}}</td>
+    <td class="muted">{{.LastUsed}}</td>
+    <td class="right">
+      {{if .Detail}}
+      <button class="btn btn-ghost btn-sm"
+              hx-get="/ui/p/{{.Project}}/{{.Env}}/tokens/{{.Token.ID}}/row?status={{.Filter}}"
+              hx-target="closest tbody" hx-swap="outerHTML">Hide</button>
+      {{else}}
+      <button class="btn btn-ghost btn-sm"
+              hx-get="/ui/p/{{.Project}}/{{.Env}}/tokens/{{.Token.ID}}?status={{.Filter}}"
+              hx-target="closest tbody" hx-swap="outerHTML">Details</button>
+      {{end}}
+      {{if not .Token.RevokedAt}}
+      <button class="btn btn-danger btn-sm"
+              hx-post="/ui/p/{{.Project}}/{{.Env}}/tokens/{{.Token.ID}}/revoke?status={{.Filter}}"
+              hx-confirm="Revoke this token? Any attempt to redeem it will fail from now on."
+              hx-target="closest tbody" hx-swap="outerHTML">Revoke</button>
+      {{end}}
+    </td>
+  </tr>
+
+  {{with .Detail}}
+  <tr class="detail-row">
+    <td colspan="7">
+      <div class="detail">
+        <div class="detail-block">
+          <h4>Payload</h4>
+          <pre class="payload"><code>{{.Payload}}</code></pre>
+        </div>
+
+        <div class="detail-block">
+          <h4>Token</h4>
+          {{if .Value}}
+          <div class="key-value">
+            <code>{{.Value}}</code>
+            <button class="btn btn-sm" type="button" onclick="copyText(this, {{.Value}})">Copy</button>
+            <button class="btn btn-sm" type="button" onclick="copyConsumeCurl(this, {{.Value}})">Copy as curl</button>
+          </div>
+          {{else}}
+          <p class="muted">Not loaded. It is fetched only when you ask, so it is not
+            sitting in this page waiting to be read over your shoulder.</p>
+          <button class="btn btn-sm" type="button"
+                  hx-get="/ui/p/{{$.Project}}/{{$.Env}}/tokens/{{$.Token.ID}}/reveal?status={{$.Filter}}"
+                  hx-target="closest tbody" hx-swap="outerHTML">Show token</button>
+          {{end}}
+        </div>
+
+        <div class="detail-block">
+          <h4>Record</h4>
+          <dl class="facts">
+            <dt>id</dt><dd><code>{{$.Token.ID}}</code></dd>
+            <dt>status</dt><dd>{{$.Status}}</dd>
+            <dt>uses</dt><dd>{{$.Uses}}</dd>
+            <dt>expires</dt><dd>{{$.Expires}}</dd>
+            <dt>created</dt><dd>{{$.Created}}</dd>
+            <dt>last used</dt><dd>{{$.LastUsed}}</dd>
+          </dl>
+          <button class="btn btn-danger btn-sm"
+                  hx-delete="/ui/p/{{$.Project}}/{{$.Env}}/tokens/{{$.Token.ID}}?status={{$.Filter}}"
+                  hx-confirm="Delete this record entirely? Revoking stops the token and keeps its history; deleting throws the history away."
+                  hx-target="#tokens-panel" hx-swap="outerHTML">Delete record</button>
+        </div>
+      </div>
+    </td>
+  </tr>
+  {{end}}
+</tbody>
+{{end}}
+
+
+{{define "keys_panel"}}
+<div id="keys-panel">
+  {{if .Error}}<div class="banner error">{{.Error}}</div>{{end}}
+
+  {{if .NewKey}}
+  <div class="banner success key-reveal">
+    <strong>Key created.</strong>
+    <p>This value will never be shown again — copy it now and store it somewhere safe.</p>
+    <div class="key-value">
+      <code>{{.NewKey}}</code>
+      <button class="btn btn-sm" type="button" onclick="copyText(this, {{.NewKey}})">Copy</button>
+    </div>
+  </div>
+  {{end}}
+
+  <form class="card create-form" hx-post="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/keys"
+        hx-target="#keys-panel" hx-swap="outerHTML">
+    <div class="field">
+      <label for="nk-scope">Scope</label>
+      <select id="nk-scope" name="scope">
+        {{range .Scopes}}<option value="{{.}}">{{.}}</option>{{end}}
+      </select>
+    </div>
+    <div class="field grow">
+      <label for="nk-label">Label</label>
+      <input id="nk-label" name="label" placeholder="ios-app" autocomplete="off">
+    </div>
+    <button class="btn btn-primary" type="submit">Create key</button>
+  </form>
+
+  <table class="data">
+    <thead>
+      <tr><th>Key</th><th>Scope</th><th>Label</th><th>Created</th><th>State</th><th class="right">Actions</th></tr>
+    </thead>
+    <tbody>
+      {{range .Rows}}
+      <tr class="{{if not .Key.Active}}revoked{{end}}">
+        <td><code class="key">{{.Key.KeyPrefix}}…</code></td>
+        <td><span class="badge scope-{{.Key.Scope}}">{{.Key.Scope}}</span></td>
+        <td>{{.Key.Label}}</td>
+        <td class="muted">{{.Created}}</td>
+        <td>{{if .Key.Active}}<span class="badge ok">active</span>{{else}}<span class="badge off">revoked · {{.Revoked}}</span>{{end}}</td>
+        <td class="right">
+          {{if .Key.Active}}
+          <button class="btn btn-danger btn-sm"
+                  hx-post="/ui/p/{{.Project}}/{{.Env}}/keys/{{.Key.ID}}/revoke"
+                  hx-confirm="Revoke this key? Clients using it will start getting 401."
+                  hx-target="#keys-panel" hx-swap="outerHTML">Revoke</button>
+          {{else}}
+          <button class="btn btn-ghost btn-sm"
+                  hx-delete="/ui/p/{{.Project}}/{{.Env}}/keys/{{.Key.ID}}"
+                  hx-confirm="Delete this record entirely?"
+                  hx-target="#keys-panel" hx-swap="outerHTML">Delete record</button>
+          {{end}}
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="6" class="empty">No keys in this environment.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+
+{{define "webhooks_panel"}}
+<div id="webhooks-panel">
+  {{if .Error}}<div class="banner error">{{.Error}}</div>{{end}}
+  {{if .Notice}}<div class="banner success">{{.Notice}}</div>{{end}}
+
+  <form class="card create-form column" hx-post="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/webhooks"
+        hx-target="#webhooks-panel" hx-swap="outerHTML">
+    <div class="row">
+      <div class="field grow">
+        <label for="nw-url">URL</label>
+        <input id="nw-url" name="url" placeholder="https://example.com/hooks/tokenzy" required
+               autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="nw-label">Label</label>
+        <input id="nw-label" name="label" placeholder="optional" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Events</label>
+      <div class="checks">
+        {{range .AllEvents}}
+        <label class="check"><input type="checkbox" name="events" value="{{.}}"> <code>{{.}}</code></label>
+        {{end}}
+      </div>
+      <p class="hint">Select none to receive all of them.</p>
+    </div>
+
+    <label class="check">
+      <input type="checkbox" name="includePayload" value="1">
+      Include the token payload in deliveries
+    </label>
+    <p class="hint">Off by default. The token itself is never sent either way —
+      deliveries carry the id, the prefix and the metadata.</p>
+
+    <button class="btn btn-primary" type="submit">Add webhook</button>
+  </form>
+
+  {{range .Rows}}
+  <article class="card webhook-card {{if not .Hook.Enabled}}disabled{{end}}">
+    <header>
+      <code class="key">{{.Hook.URL}}</code>
+      {{if .Hook.Enabled}}<span class="badge ok">enabled</span>
+      {{else}}<span class="badge off">disabled</span>{{end}}
+      <div class="spacer"></div>
+      <button class="btn btn-ghost btn-sm"
+              hx-post="/ui/p/{{.Project}}/{{.Env}}/webhooks/{{.Hook.ID}}/test"
+              hx-target="#webhooks-panel" hx-swap="outerHTML">Test</button>
+      <button class="btn btn-ghost btn-sm"
+              hx-post="/ui/p/{{.Project}}/{{.Env}}/webhooks/{{.Hook.ID}}/toggle"
+              hx-target="#webhooks-panel" hx-swap="outerHTML">{{if .Hook.Enabled}}Disable{{else}}Enable{{end}}</button>
+      <button class="btn btn-danger btn-sm"
+              hx-delete="/ui/p/{{.Project}}/{{.Env}}/webhooks/{{.Hook.ID}}"
+              hx-confirm="Delete this webhook and its delivery history?"
+              hx-target="#webhooks-panel" hx-swap="outerHTML">Delete</button>
+    </header>
+
+    {{if .Hook.Label}}<p class="muted">{{.Hook.Label}}</p>{{end}}
+
+    <dl class="facts">
+      <dt>events</dt><dd>{{.Events}}</dd>
+      <dt>payload</dt><dd>{{if .Hook.IncludePayload}}included{{else}}not sent{{end}}</dd>
+      <dt>created</dt><dd>{{.Created}}</dd>
+      <dt>secret</dt>
+      <dd>
+        <span class="key-value inline-secret">
+          <code>{{.Hook.Secret}}</code>
+          <button class="btn btn-sm" type="button" onclick="copyText(this, {{.Hook.Secret}})">Copy</button>
+        </span>
+      </dd>
+    </dl>
+
+    {{if .Deliveries}}
+    <table class="data compact">
+      <thead>
+        <tr><th>When</th><th>Event</th><th>Result</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+        {{range .Deliveries}}
+        <tr>
+          <td class="muted">{{.Created}}</td>
+          <td><code>{{.Delivery.EventType}}</code></td>
+          <td>
+            {{if eq .State "delivered"}}<span class="badge ok">delivered</span>
+            {{else if eq .State "retrying"}}<span class="badge warn">retrying</span>
+            {{else}}<span class="badge off">failed</span>{{end}}
+          </td>
+          <td class="muted">{{.Detail}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="muted">No deliveries yet.</p>
+    {{end}}
+  </article>
+  {{else}}
+  <p class="empty">No webhooks in this environment.</p>
+  {{end}}
+</div>
+{{end}}

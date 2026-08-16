@@ -1,0 +1,8 @@
+{{define "content"}}
+<h1 class="page-title">Tokens</h1>
+<p class="muted">Opaque tokens carrying a JSON payload. Redeeming one is
+  <code>POST /v1/consume</code> with the token in the body; whoever redeems it gets the
+  payload back exactly as it went in. Listings show only the prefix — open a row to see
+  the token itself.</p>
+{{template "tokens_panel" .}}
+{{end}}
