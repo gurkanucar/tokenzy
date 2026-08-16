@@ -24,9 +24,29 @@ be spent right now.
 Typical uses: magic sign-in links, invitation links, password resets, one-time download
 links, event passes and QR tickets, device-pairing codes.
 
+## Interface
+
+<p align="center">
+  <img src="docs/screenshots/admin-panel.jpg" alt="Tokenzy admin panel showing token issuance and lifecycle filters" width="100%">
+</p>
+
+<p align="center"><sub>Token issuance and lifecycle filters</sub></p>
+
+<p align="center">
+  <img src="docs/screenshots/one-time-codes.jpg" alt="Tokenzy one-time code management screen" width="49%">
+  <img src="docs/screenshots/api-keys.jpg" alt="Tokenzy environment-scoped API key management screen" width="49%">
+</p>
+
+<p align="center"><sub>One-time codes · Environment-scoped API keys</sub></p>
+
+The embedded panel keeps token issuance, one-time codes, API keys and webhook delivery settings
+scoped to the selected project and environment. Token listings expose only a prefix until an
+administrator explicitly asks for the value, while lifecycle filters keep active, expired, spent
+and revoked records easy to distinguish. Light and dark themes are built in.
+
 ## Contents
 
-- [Build](#build) · [Run](#run) · [Configuration](#configuration-via-environment)
+- [Interface](#interface) · [Build](#build) · [Run](#run) · [Configuration](#configuration-via-environment)
 - [Concepts](#concepts) · [Scopes](#scopes--read-this-before-shipping-a-key)
 - [Token API](#token-api) · [One-time codes](#one-time-codes)
 - [Webhooks](#webhooks) · [Admin panel](#admin-panel)
