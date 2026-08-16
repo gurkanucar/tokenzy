@@ -72,11 +72,11 @@ Environment variables (serve):
                                Default: 1 (enabled). Set to 0 to turn it off.
   TOKENZY_MAX_TTL              Longest lifetime a caller may request.
                                Default: 2160h (90 days)
-  TOKENZY_RETENTION_EXPIRED    How long expired tokens are kept. Default: 168h
+  TOKENZY_RETENTION_EXPIRED    How long expired tokens are kept. Default: 24h
   TOKENZY_RETENTION_CONSUMED   How long spent and revoked tokens are kept.
-                               Default: 720h
+                               Default: 72h
   TOKENZY_RETENTION_DELIVERIES How long settled webhook deliveries are kept.
-                               Default: 168h
+                               Default: 24h
   TOKENZY_CLEANUP_INTERVAL     How often the cleanup sweep runs. Default: 10m
 
   Durations are Go duration strings: 90s, 15m, 24h, 720h.

@@ -20,19 +20,29 @@ const (
 	// DefaultInterval is how often the sweep runs.
 	DefaultInterval = 10 * time.Minute
 
-	// DefaultExpiredRetention keeps expired tokens around for a week. Long
-	// enough to answer "what happened to that link?", short enough that a dead
-	// secret is not kept for a month.
-	DefaultExpiredRetention = 7 * 24 * time.Hour
+	// The retention windows are short by design.
+	//
+	// A longer window is not a free "just in case": tokens are stored in
+	// plaintext, so every day a finished row survives is another day a dead
+	// secret sits in a file that gets backed up and copied around. The windows
+	// below are sized to cover the question somebody might actually ask —
+	// "what happened to that link I sent?" — and no more. A service that needs
+	// a real audit trail should be writing one to its own store, where it can
+	// keep an id instead of a secret.
 
-	// DefaultConsumedRetention keeps spent and revoked tokens for a month. They
-	// are the record of who used what and when, which is worth more than the
-	// expired ones and is worth keeping longer.
-	DefaultConsumedRetention = 30 * 24 * time.Hour
+	// DefaultExpiredRetention keeps expired tokens for a day. An expired token
+	// stops being interesting almost immediately.
+	DefaultExpiredRetention = 24 * time.Hour
 
-	// DefaultDeliveryRetention keeps settled webhook deliveries. They are an
-	// operational log, not evidence.
-	DefaultDeliveryRetention = 7 * 24 * time.Hour
+	// DefaultConsumedRetention keeps spent and revoked tokens for three days —
+	// a weekend's worth, so a Monday-morning "did this get used?" still has an
+	// answer. Longer than the expired window because this is the more useful
+	// record of the two, but still measured in days rather than weeks.
+	DefaultConsumedRetention = 72 * time.Hour
+
+	// DefaultDeliveryRetention keeps settled webhook deliveries for a day. They
+	// are an operational log, not evidence.
+	DefaultDeliveryRetention = 24 * time.Hour
 
 	// batchSize bounds one DELETE. Working in batches keeps the single write
 	// connection available to real requests: a backlog of a million rows

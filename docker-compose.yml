@@ -33,10 +33,11 @@ services:
       # Longest lifetime a caller may request.
       TOKENZY_MAX_TTL: ${TOKENZY_MAX_TTL:-2160h}
       # Retention. These are not housekeeping: tokens are stored in plaintext,
-      # so a row kept past its usefulness is a secret kept for no reason.
-      TOKENZY_RETENTION_EXPIRED: ${TOKENZY_RETENTION_EXPIRED:-168h}
-      TOKENZY_RETENTION_CONSUMED: ${TOKENZY_RETENTION_CONSUMED:-720h}
-      TOKENZY_RETENTION_DELIVERIES: ${TOKENZY_RETENTION_DELIVERIES:-168h}
+      # so a row kept past its usefulness is a secret kept for no reason. Raise
+      # them only for a reason you can name.
+      TOKENZY_RETENTION_EXPIRED: ${TOKENZY_RETENTION_EXPIRED:-24h}
+      TOKENZY_RETENTION_CONSUMED: ${TOKENZY_RETENTION_CONSUMED:-72h}
+      TOKENZY_RETENTION_DELIVERIES: ${TOKENZY_RETENTION_DELIVERIES:-24h}
 
     # The SQLite database lives here, and this line is what keeps it. Without a
     # volume mounted at /data, every container recreation — which is what most

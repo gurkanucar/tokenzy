@@ -65,9 +65,9 @@ cp .env.example .env
 | `TOKENZY_ADMIN_PASSWORD_FILE` | read the password from a file; takes precedence over `TOKENZY_ADMIN_PASSWORD` |
 | `TOKENZY_SEED_DATA` | insert the demo project. Default `1` |
 | `TOKENZY_MAX_TTL` | longest lifetime a caller may request. Default `2160h` (90 days) |
-| `TOKENZY_RETENTION_EXPIRED` | how long expired tokens are kept. Default `168h` |
-| `TOKENZY_RETENTION_CONSUMED` | how long spent and revoked tokens are kept. Default `720h` |
-| `TOKENZY_RETENTION_DELIVERIES` | how long settled webhook deliveries are kept. Default `168h` |
+| `TOKENZY_RETENTION_EXPIRED` | how long expired tokens are kept. Default `24h` |
+| `TOKENZY_RETENTION_CONSUMED` | how long spent and revoked tokens are kept. Default `72h` |
+| `TOKENZY_RETENTION_DELIVERIES` | how long settled webhook deliveries are kept. Default `24h` |
 | `TOKENZY_CLEANUP_INTERVAL` | how often the cleanup sweep runs. Default `10m` |
 | `TOKENZY_PORT` | host port published by Docker Compose |
 
@@ -383,8 +383,18 @@ What that buys has to be paid for, and these are not optional:
 - **The database file and every backup of it are secret material.** The file is created
   0600 and the container's `/data` is 0700, but nothing here can permission your backups.
   Do that yourself.
-- **Retention is enforced.** A cleanup job deletes tokens that are finished with, so a
-  spent secret does not sit in the file forever. It is hygiene, not housekeeping.
+- **Retention is enforced, and short.** A cleanup job deletes tokens that are finished
+  with, so a spent secret does not sit in the file forever. It is hygiene, not
+  housekeeping — which is why the defaults are a day or three rather than weeks.
+
+  A row goes as soon as **either** rule applies, so the windows are ceilings rather than
+  guarantees: a short-lived token that was spent is deleted at `expiry + EXPIRED` without
+  waiting for `CONSUMED`. What `CONSUMED` really buys you is stopping a *long*-lived token
+  that has already been spent or revoked from lingering until its distant expiry date —
+  a 90-day token revoked on day one goes on day four, not day ninety-seven.
+
+  If you need a lasting record of what was used and when, write it in your own service,
+  where you can keep the token **id** instead of the token.
 
 If your threat model does not accept a readable token store, this is the wrong service —
 and that is a fair conclusion to reach. It is written down here so it is a decision rather
