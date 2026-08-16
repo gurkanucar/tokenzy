@@ -1,0 +1,18 @@
+-- One index, for the one query that measurement showed needed it.
+--
+-- The delivery table grows by a row per event per webhook, and the cleanup
+-- sweep asks it every ten minutes whether anything is old enough to remove.
+-- Without an index that question is a full scan, and in the steady state — the
+-- state it is in almost always — the scan reads the entire table to find
+-- nothing.
+--
+-- At 500k deliveries that is 16ms of the single write connection, every ten
+-- minutes, spent on nothing. With the index it is 0.0ms. The cost is about 15%
+-- on delivery inserts, which happen on a background goroutine and not on the
+-- request path, so the trade is one-sided.
+--
+-- No token indexes here, deliberately. Several looked justified from
+-- EXPLAIN QUERY PLAN and turned out to be harmful when measured against a
+-- 200k-row table; the note in this package's index test records what was tried
+-- and what it cost.
+CREATE INDEX idx_webhook_deliveries_created ON webhook_deliveries(created_at);

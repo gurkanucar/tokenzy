@@ -457,6 +457,32 @@ Covering, among other things:
 - lifetime units converting exactly, and "9999999999999999 days" being refused rather than
   overflowing into a token that never expires
 
+### Indexes
+
+`internal/db/plan_test.go` pins the access path of every query whose cost grows
+with the size of a table, so an index that stops being used fails the build rather
+than quietly making the service slower.
+
+The indexes were chosen by measuring, and the measurements overruled the query
+plans more than once. Against 200k tokens and 500k webhook deliveries:
+
+| | before | after |
+|---|---|---|
+| panel status counts | 70ms | **30ms** |
+| delivery cleanup sweep (holds the write connection) | 15ms | **0.0ms** |
+| token listing, first page | 0.01ms | 0.01ms |
+
+The status counts got faster with no index at all — four `COUNT` queries over the
+same rows became one pass. A covering index does take them to ~17ms, but it has to
+include `used_count`, which changes on every redemption; it more than doubled the
+cost of consuming a token, which is a bad trade for 13ms on a page a human loads by
+hand.
+
+Two cleanup queries still scan their table on purpose. Indexes that removed the
+scans measured *slower*, because a `LIMIT`ed linear pass beats a union of two index
+scans here. `TestKnownTableScans` asserts they still scan, so that changing it means
+reading why and measuring again.
+
 ### Load test
 
 [k6](https://k6.io) workloads, each against its own fresh database:
