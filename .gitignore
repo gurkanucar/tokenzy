@@ -14,5 +14,9 @@
 .env.*
 !.env.example
 
+# Browser-automation artifacts from local UI checks
+.playwright-mcp/
+*.png
+
 # macOS
 .DS_Store

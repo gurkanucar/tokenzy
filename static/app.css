@@ -193,8 +193,15 @@ code, .key { font-family: var(--mono); font-size: .88em; }
 .create-form .field { margin-bottom: 0; }
 .create-form.column .field { margin-bottom: 14px; }
 .field.grow { flex: 1; min-width: 180px; }
-/* Puts a button on the same baseline as the inputs beside it. */
-.field.bottom { justify-content: flex-end; align-items: flex-start; }
+
+/* Reserves exactly one label's worth of height, so a control that has no label
+   of its own still starts level with the inputs next to it. Derived from the
+   label's own typography rather than a measured pixel value, so it stays
+   correct if that changes. */
+.label-spacer { display: block; font-size: 11px; line-height: 1.55; }
+.label-spacer::before { content: "\00a0"; }
+/* The button should fill neither the row nor nothing: keep it its own size. */
+.field > .btn { align-self: flex-start; }
 
 .field label, .card form label {
   font-size: 11px;
@@ -205,6 +212,13 @@ code, .key { font-family: var(--mono); font-size: .88em; }
 }
 
 .hint { font-size: 12px; color: var(--fg-muted); margin: 2px 0 0; line-height: 1.5; max-width: 70ch; }
+.hint.over { color: var(--danger); }
+
+/* A number and its unit are one value, so they sit in one control-shaped row
+   rather than reading as two unrelated fields. */
+.combo { display: flex; gap: 8px; }
+.combo input { flex: 1; min-width: 7ch; }
+.combo select { flex: none; width: auto; min-width: 108px; }
 
 .checks { display: flex; flex-wrap: wrap; gap: 14px; padding: 4px 0; }
 

@@ -138,8 +138,9 @@ POST /v1/consume  →  valid: false, error: "invalid_token"
 ```
 
 The redemption is a single atomic `UPDATE`, so the condition and the effect land together.
-Fifty simultaneous attempts on one single-use token produce exactly one success — verified
-both by a unit test and against a running server.
+Simultaneous attempts on one single-use token produce exactly one success — verified by a
+unit test, and by a [load test](#load-test) that threw 99,704 concurrent redemptions at a
+single token and got one.
 
 ### Entropy, and why there is no rate limit
 
@@ -314,7 +315,13 @@ token payload is included only if you tick that box, and it is off by default.
 }
 ```
 
-Headers: `X-Webhook-Id` (event id), `X-Webhook-Event`, `X-Webhook-Attempt`, and
+Each webhook can carry extra request headers of its own — an `Authorization` bearer for an
+API gateway, a tenant id, a routing key — set as `Name: value` lines in the panel. They are
+applied *before* tokenzy's own headers, so none of them can displace the signature, and
+`Content-Type` and `X-Webhook-*` are refused at the form rather than silently ignored.
+
+tokenzy's own headers are `X-Webhook-Id` (event id), `X-Webhook-Event`, `X-Webhook-Attempt`,
+and
 
 ```
 X-Webhook-Signature: sha256=<hex HMAC-SHA256 of the raw body, keyed with the webhook secret>
@@ -363,6 +370,12 @@ until then it is not in the page at all. Not hidden with CSS: absent.
 
 Filter chips are real URLs, so a filtered view can be bookmarked and shared. Paging is by
 cursor, which stays correct even when a whole page of tokens shares a timestamp.
+
+The issue form takes a lifetime as a number plus a unit — seconds, minutes, hours or days —
+and spells the result back out ("15 minutes — expires 16/08/2026, 15:00"). The multiplication
+happens on the server, so the form works with JavaScript switched off and the ceiling is
+enforced in one place; the browser only saves you a round trip. A rejected submission comes
+back with everything you typed still in it.
 
 ## Storage: tokens are kept in plaintext
 
@@ -440,3 +453,29 @@ Covering, among other things:
 - listings and webhook deliveries containing no plaintext token, checked against the bytes
 - cursor paging visiting every token exactly once
 - webhook signatures verifying, retries being scheduled, and delivered events not re-sent
+- custom webhook headers reaching the receiver without being able to displace the signature
+- lifetime units converting exactly, and "9999999999999999 days" being refused rather than
+  overflowing into a token that never expires
+
+### Load test
+
+[k6](https://k6.io) workloads, each against its own fresh database:
+
+```bash
+./loadtest/run.sh              # all workloads
+VUS=100 DURATION=60s ./loadtest/run.sh
+```
+
+`mint`, `consume`, `reuse`, `manage` and `mixed` measure throughput. **`contend` does not** —
+it points every VU at a single `maxUses: 1` token for the whole run and asserts that exactly
+one request in the entire test succeeded. On a laptop that is a hundred thousand concurrent
+attempts producing one redemption:
+
+```
+tokens_accepted: count=1
+tokens_rejected: count=99703
+PASS: exactly 1 redemption succeeded out of 99704 attempts
+```
+
+The databases it creates hold real plaintext tokens. They land in the gitignored output
+directory — delete it when you are done.

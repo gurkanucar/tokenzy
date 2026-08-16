@@ -162,7 +162,7 @@ func TestDeliveryNeverCarriesTheToken(t *testing.T) {
 	// include_payload on, so this is the most generous shape a delivery can
 	// have — and even here the token itself must be absent.
 	hook, err := f.db.CreateWebhook(context.Background(), f.envID, rec.server.URL,
-		"whsec_test", nil, "test", true)
+		"whsec_test", nil, nil, "test", true)
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestPayloadIsWithheldByDefault(t *testing.T) {
 	rec := newReceiver(t)
 
 	if _, err := f.db.CreateWebhook(context.Background(), f.envID, rec.server.URL,
-		"whsec_test", nil, "", false); err != nil {
+		"whsec_test", nil, nil, "", false); err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
 
@@ -247,7 +247,7 @@ func TestSignatureVerifies(t *testing.T) {
 
 	const secret = "whsec_0123456789abcdef"
 	if _, err := f.db.CreateWebhook(context.Background(), f.envID, rec.server.URL,
-		secret, nil, "", false); err != nil {
+		secret, nil, nil, "", false); err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
 
@@ -279,7 +279,7 @@ func TestSubscriptionFiltering(t *testing.T) {
 	rec := newReceiver(t)
 
 	if _, err := f.db.CreateWebhook(context.Background(), f.envID, rec.server.URL,
-		"whsec_test", []string{model.EventTokenExhausted}, "", false); err != nil {
+		"whsec_test", []string{model.EventTokenExhausted}, nil, "", false); err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
 
@@ -306,7 +306,7 @@ func TestDisabledWebhookReceivesNothing(t *testing.T) {
 	f := newFixture(t)
 	rec := newReceiver(t)
 
-	hook, err := f.db.CreateWebhook(ctx, f.envID, rec.server.URL, "whsec_test", nil, "", false)
+	hook, err := f.db.CreateWebhook(ctx, f.envID, rec.server.URL, "whsec_test", nil, nil, "", false)
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestFailedDeliveryIsRetried(t *testing.T) {
 	rec := newReceiver(t)
 	rec.setStatus(http.StatusInternalServerError)
 
-	hook, err := f.db.CreateWebhook(ctx, f.envID, rec.server.URL, "whsec_test", nil, "", false)
+	hook, err := f.db.CreateWebhook(ctx, f.envID, rec.server.URL, "whsec_test", nil, nil, "", false)
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestSuccessfulDeliveryIsRecordedOnce(t *testing.T) {
 	f := newFixture(t)
 	rec := newReceiver(t)
 
-	hook, err := f.db.CreateWebhook(ctx, f.envID, rec.server.URL, "whsec_test", nil, "", false)
+	hook, err := f.db.CreateWebhook(ctx, f.envID, rec.server.URL, "whsec_test", nil, nil, "", false)
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
@@ -430,5 +430,102 @@ func TestValidateURL(t *testing.T) {
 		if err := ValidateURL(u); err == nil {
 			t.Errorf("ValidateURL(%q) = nil, want an error", u)
 		}
+	}
+}
+
+// TestParseHeaders covers the shapes an operator can type into the form.
+func TestParseHeaders(t *testing.T) {
+	got, err := ParseHeaders("Authorization: Bearer abc123\n\n  X-Tenant:  acme  \n")
+	if err != nil {
+		t.Fatalf("ParseHeaders: %v", err)
+	}
+	want := map[string]string{"Authorization": "Bearer abc123", "X-Tenant": "acme"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for name, value := range want {
+		if got[name] != value {
+			t.Fatalf("header %q = %q, want %q", name, got[name], value)
+		}
+	}
+
+	// A value may legitimately contain colons; only the first one splits.
+	got, err = ParseHeaders("X-Trace: a:b:c")
+	if err != nil {
+		t.Fatalf("ParseHeaders: %v", err)
+	}
+	if got["X-Trace"] != "a:b:c" {
+		t.Fatalf("X-Trace = %q, want a:b:c", got["X-Trace"])
+	}
+
+	rejected := map[string]string{
+		"no colon":           "Authorization Bearer abc",
+		"empty name":         ": value",
+		"space in name":      "X Tenant: acme",
+		"newline in name":    "X-A\rB: c",
+		"carriage return":    "X-A: b\rX-Injected: c",
+		"reserved signature": "X-Webhook-Signature: sha256=deadbeef",
+		"reserved id":        "x-webhook-id: mine",
+		"reserved conteent":  "Content-Type: text/plain",
+	}
+	for name, input := range rejected {
+		if _, err := ParseHeaders(input); err == nil {
+			t.Errorf("%s: ParseHeaders(%q) = nil error, want a rejection", name, input)
+		}
+	}
+}
+
+// TestCustomHeadersAreSentButCannotOverrideOurs is the security property behind
+// applying them first: a webhook's own headers reach the receiver, and none of
+// them can displace the signature.
+func TestCustomHeadersAreSentButCannotOverrideOurs(t *testing.T) {
+	f := newFixture(t)
+
+	var (
+		mu   sync.Mutex
+		seen http.Header
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		seen = req.Header.Clone()
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	// The reserved header is planted directly in the database, bypassing the
+	// form validation, so this tests the delivery path's own guarantee rather
+	// than the form's.
+	headers := map[string]string{
+		"Authorization":       "Bearer gateway-token",
+		"X-Tenant":            "acme",
+		"X-Webhook-Signature": "sha256=forged",
+	}
+	if _, err := f.db.CreateWebhook(context.Background(), f.envID, server.URL,
+		"whsec_test", nil, headers, "", false); err != nil {
+		t.Fatalf("create webhook: %v", err)
+	}
+
+	f.mint(t, nil)
+	waitFor(t, "the delivery", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return seen != nil
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if got := seen.Get("Authorization"); got != "Bearer gateway-token" {
+		t.Fatalf("Authorization = %q, want the configured value", got)
+	}
+	if got := seen.Get("X-Tenant"); got != "acme" {
+		t.Fatalf("X-Tenant = %q, want acme", got)
+	}
+	if got := seen.Get("X-Webhook-Signature"); got == "sha256=forged" {
+		t.Fatal("a configured header overwrote the delivery signature")
+	}
+	if !strings.HasPrefix(seen.Get("X-Webhook-Signature"), "sha256=") {
+		t.Fatalf("signature header is missing or malformed: %q", seen.Get("X-Webhook-Signature"))
 	}
 }

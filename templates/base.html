@@ -104,22 +104,79 @@ function switchEnv(slug) {
   }
 }
 
-// Keep Save disabled while the payload does not parse. The server validates
-// too — this only saves a round trip to be told what the browser already knew.
+// Client-side checks below only save a round trip: every rule they enforce is
+// enforced again on the server, which is what the form actually relies on.
+
+// Several fields can hold up one submit button, so each records its own verdict
+// and the button reflects all of them. Without this the two validators below
+// would fight: whichever ran last would re-enable a button the other disabled.
+function markField(form, name, ok) {
+  var state = form.__invalid || (form.__invalid = {});
+  if (ok) { delete state[name]; } else { state[name] = true; }
+  var btn = form.querySelector('button[type=submit]');
+  if (btn) btn.disabled = Object.keys(state).length > 0;
+}
+
 function validateJSON(el) {
   var form = el.closest('form');
-  var btn = form.querySelector('button[type=submit]');
   var msg = form.querySelector('.json-error');
   try {
     JSON.parse(el.value);
     el.classList.remove('invalid');
-    btn.disabled = false;
     msg.textContent = '';
+    markField(form, 'payload', true);
   } catch (e) {
     el.classList.add('invalid');
-    btn.disabled = true;
     msg.textContent = 'Invalid JSON: ' + e.message;
+    markField(form, 'payload', false);
   }
+}
+
+// Spell the chosen lifetime back out. The point is catching the slip that the
+// unit dropdown makes possible in the first place — meaning 15 minutes and
+// leaving the box on days.
+function updateLifetime(form) {
+  var input = form.querySelector('[name=ttlValue]');
+  var select = form.querySelector('[name=ttlUnit]');
+  var hint = form.querySelector('.lifetime-hint');
+  if (!input || !select || !hint) return;
+
+  var max = parseInt(form.dataset.maxTtl, 10);
+  var per = parseInt(select.options[select.selectedIndex].dataset.seconds, 10);
+  var n = parseInt(input.value, 10);
+
+  if (!(n > 0)) {
+    hint.textContent = 'Ceiling: ' + describeSeconds(max);
+    hint.classList.remove('over');
+    markField(form, 'ttl', false);
+    return;
+  }
+
+  var total = n * per;
+  if (total > max) {
+    hint.textContent = describeSeconds(total) + ' is over the ceiling of ' + describeSeconds(max);
+    hint.classList.add('over');
+    markField(form, 'ttl', false);
+    return;
+  }
+
+  var expires = new Date(Date.now() + total * 1000);
+  hint.textContent = describeSeconds(total) + ' — expires ' + expires.toLocaleString();
+  hint.classList.remove('over');
+  markField(form, 'ttl', true);
+}
+
+// Largest whole unit, matching how the server words the same duration.
+function describeSeconds(total) {
+  var units = [[86400, 'day'], [3600, 'hour'], [60, 'minute'], [1, 'second']];
+  for (var i = 0; i < units.length; i++) {
+    var size = units[i][0];
+    if (total % size === 0) {
+      var n = total / size;
+      return n + ' ' + units[i][1] + (n === 1 ? '' : 's');
+    }
+  }
+  return total + ' seconds';
 }
 
 // A ready-to-run redemption for the token that was just issued. location.origin

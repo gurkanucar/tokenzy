@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,20 +11,31 @@ import (
 	"tokenzy/internal/model"
 )
 
-const webhookColumns = `id, environment_id, url, secret, events, label, include_payload,
-	created_at, disabled_at`
+const webhookColumns = `id, environment_id, url, secret, events, headers, label,
+	include_payload, created_at, disabled_at`
 
 func scanWebhook(s rowScanner) (model.Webhook, error) {
 	var (
 		w        model.Webhook
 		events   string
+		headers  string
 		disabled sql.NullInt64
 	)
-	err := s.Scan(&w.ID, &w.EnvironmentID, &w.URL, &w.Secret, &events, &w.Label,
+	err := s.Scan(&w.ID, &w.EnvironmentID, &w.URL, &w.Secret, &events, &headers, &w.Label,
 		&w.IncludePayload, &w.CreatedAt, &disabled)
+	if err != nil {
+		return model.Webhook{}, err
+	}
+
 	w.Events = splitEvents(events)
+	w.Headers = map[string]string{}
+	if headers != "" {
+		// A malformed header blob must not take a whole listing down; the
+		// webhook is still worth showing, just without its headers.
+		_ = json.Unmarshal([]byte(headers), &w.Headers)
+	}
 	w.DisabledAt = nullableInt64(disabled)
-	return w, err
+	return w, nil
 }
 
 // splitEvents decodes the stored subscription list. An empty column means "all
@@ -46,13 +58,22 @@ func splitEvents(s string) []string {
 
 // CreateWebhook adds a webhook to an environment.
 func (d *DB) CreateWebhook(ctx context.Context, envID int64, url, secret string,
-	events []string, label string, includePayload bool) (model.Webhook, error) {
+	events []string, headers map[string]string, label string, includePayload bool) (model.Webhook, error) {
+
+	if headers == nil {
+		headers = map[string]string{}
+	}
+	encoded, err := json.Marshal(headers)
+	if err != nil {
+		return model.Webhook{}, fmt.Errorf("create webhook: %w", err)
+	}
 
 	ts := now()
 	res, err := d.Write.ExecContext(ctx,
-		`INSERT INTO webhooks (environment_id, url, secret, events, label, include_payload, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		envID, url, secret, strings.Join(events, ","), label, includePayload, ts)
+		`INSERT INTO webhooks (environment_id, url, secret, events, headers, label,
+			include_payload, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		envID, url, secret, strings.Join(events, ","), string(encoded), label, includePayload, ts)
 	if err != nil {
 		return model.Webhook{}, fmt.Errorf("create webhook: %w", err)
 	}
@@ -62,7 +83,7 @@ func (d *DB) CreateWebhook(ctx context.Context, envID int64, url, secret string,
 	}
 	return model.Webhook{
 		ID: id, EnvironmentID: envID, URL: url, Secret: secret, Events: events,
-		Label: label, IncludePayload: includePayload, CreatedAt: ts,
+		Headers: headers, Label: label, IncludePayload: includePayload, CreatedAt: ts,
 	}, nil
 }
 

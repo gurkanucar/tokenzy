@@ -108,15 +108,12 @@
   {{end}}
 
   <form class="card create-form column" hx-post="/ui/p/{{.Project.Slug}}/{{.Env.Slug}}/tokens"
-        hx-target="#tokens-panel" hx-swap="outerHTML">
+        hx-target="#tokens-panel" hx-swap="outerHTML" data-max-ttl="{{.MaxTTLSeconds}}">
     <input type="hidden" name="status" value="{{.Status}}">
     <div class="field">
       <label for="nt-payload">Payload (JSON)</label>
       <textarea id="nt-payload" name="payload" rows="6" spellcheck="false"
-                oninput="validateJSON(this)">{
-  "userId": "usr_123",
-  "action": "accept_invitation"
-}</textarea>
+                oninput="validateJSON(this)">{{.Form.Payload}}</textarea>
       <div class="json-error"></div>
       <p class="hint">Stored as given and handed back verbatim on redemption. Never
         interpreted, so put a reference here rather than the data itself — anyone
@@ -124,18 +121,33 @@
     </div>
     <div class="row">
       <div class="field">
-        <label for="nt-ttl">Lifetime (seconds)</label>
-        <input id="nt-ttl" name="ttlSeconds" type="number" min="1" max="{{.MaxTTLSeconds}}"
-               value="900" required autocomplete="off">
-        <p class="hint">Ceiling: {{.MaxTTLSeconds}}s ({{.MaxTTLLabel}})</p>
+        <label for="nt-ttl">Lifetime</label>
+        {{/* Value and unit are separate fields and the multiplication happens on
+             the server, so this works with JavaScript switched off and the
+             ceiling is enforced in exactly one place. */}}
+        <div class="combo">
+          <input id="nt-ttl" name="ttlValue" type="number" min="1" value="{{.Form.TTLValue}}"
+                 required autocomplete="off" oninput="updateLifetime(this.form)">
+          <select name="ttlUnit" aria-label="Lifetime unit" onchange="updateLifetime(this.form)">
+            {{$unit := .Form.TTLUnit}}
+            {{range .TTLUnits}}
+            <option value="{{.Name}}" data-seconds="{{.Seconds}}"
+                    {{if eq .Name $unit}}selected{{end}}>{{.Plural}}</option>
+            {{end}}
+          </select>
+        </div>
+        <p class="hint lifetime-hint">Ceiling: {{.MaxTTLLabel}}</p>
       </div>
       <div class="field">
         <label for="nt-uses">Max uses</label>
         <input id="nt-uses" name="maxUses" type="number" min="1" placeholder="unlimited"
-               value="1" autocomplete="off">
+               value="{{.Form.MaxUses}}" autocomplete="off">
         <p class="hint">Leave empty for no limit. 1 means redeeming it spends it.</p>
       </div>
-      <div class="field grow bottom">
+      <div class="field grow">
+        {{/* The fields beside this one start with a label, so without a stand-in
+             of the same height the button would float a label above them. */}}
+        <span class="label-spacer" aria-hidden="true"></span>
         <button class="btn btn-primary" type="submit">Issue token</button>
       </div>
     </div>
@@ -345,26 +357,41 @@
       <div class="field grow">
         <label for="nw-url">URL</label>
         <input id="nw-url" name="url" placeholder="https://example.com/hooks/tokenzy" required
-               autocomplete="off">
+               autocomplete="off" value="{{.Form.URL}}">
       </div>
       <div class="field">
         <label for="nw-label">Label</label>
-        <input id="nw-label" name="label" placeholder="optional" autocomplete="off">
+        <input id="nw-label" name="label" placeholder="optional" autocomplete="off"
+               value="{{.Form.Label}}">
       </div>
     </div>
 
     <div class="field">
       <label>Events</label>
       <div class="checks">
+        {{$chosen := .Form.Events}}
         {{range .AllEvents}}
-        <label class="check"><input type="checkbox" name="events" value="{{.}}"> <code>{{.}}</code></label>
+        <label class="check">
+          <input type="checkbox" name="events" value="{{.}}" {{if index $chosen .}}checked{{end}}>
+          <code>{{.}}</code>
+        </label>
         {{end}}
       </div>
       <p class="hint">Select none to receive all of them.</p>
     </div>
 
+    <div class="field">
+      <label for="nw-headers">Headers</label>
+      <textarea id="nw-headers" name="headers" rows="3" spellcheck="false"
+                placeholder="One per line, for example:&#10;Authorization: Bearer abc123&#10;X-Tenant: acme">{{.Form.Headers}}</textarea>
+      <p class="hint">Optional, for receivers behind a gateway that wants its own header.
+        Sent before tokenzy's, so they cannot overwrite the signature — and
+        <code>X-Webhook-*</code> and <code>Content-Type</code> are refused rather than
+        silently ignored.</p>
+    </div>
+
     <label class="check">
-      <input type="checkbox" name="includePayload" value="1">
+      <input type="checkbox" name="includePayload" value="1" {{if .Form.Payload}}checked{{end}}>
       Include the token payload in deliveries
     </label>
     <p class="hint">Off by default. The token itself is never sent either way —
@@ -397,6 +424,14 @@
     <dl class="facts">
       <dt>events</dt><dd>{{.Events}}</dd>
       <dt>payload</dt><dd>{{if .Hook.IncludePayload}}included{{else}}not sent{{end}}</dd>
+      <dt>headers</dt>
+      <dd>
+        {{if .HeaderList}}
+          {{range .HeaderList}}<div><code>{{.}}</code></div>{{end}}
+        {{else}}
+          <span class="muted">none</span>
+        {{end}}
+      </dd>
       <dt>created</dt><dd>{{.Created}}</dd>
       <dt>secret</dt>
       <dd>

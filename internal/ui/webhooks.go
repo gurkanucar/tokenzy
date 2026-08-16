@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -21,12 +22,25 @@ type DeliveryRow struct {
 
 // WebhookRow is one webhook card.
 type WebhookRow struct {
-	Project    string
-	Env        string
-	Hook       model.Webhook
-	Created    string
-	Events     string
+	Project string
+	Env     string
+	Hook    model.Webhook
+	Created string
+	Events  string
+	// HeaderList is the header map rendered back as "Name: value" lines, sorted
+	// so the card does not reshuffle itself between page loads.
+	HeaderList []string
 	Deliveries []DeliveryRow
+}
+
+// WebhookForm carries a rejected submission back to the operator, so a typo in
+// one header does not cost them the rest of the form.
+type WebhookForm struct {
+	URL     string
+	Label   string
+	Headers string
+	Events  map[string]bool
+	Payload bool
 }
 
 // WebhooksView backs webhooks.html and the "webhooks_panel" fragment.
@@ -34,11 +48,14 @@ type WebhooksView struct {
 	Layout
 	Rows      []WebhookRow
 	AllEvents []string
+	Form      WebhookForm
 	Error     string
 	Notice    string
 }
 
-func (s *Server) webhooksView(r *http.Request, scope envScope, errMsg, notice string) (WebhooksView, error) {
+func (s *Server) webhooksView(r *http.Request, scope envScope, errMsg, notice string,
+	form *WebhookForm) (WebhooksView, error) {
+
 	hooks, err := s.db.ListWebhooks(r.Context(), scope.Env.ID)
 	if err != nil {
 		return WebhooksView{}, err
@@ -52,11 +69,12 @@ func (s *Server) webhooksView(r *http.Request, scope envScope, errMsg, notice st
 		}
 
 		row := WebhookRow{
-			Project: scope.Project.Slug,
-			Env:     scope.Env.Slug,
-			Hook:    h,
-			Created: formatTime(h.CreatedAt),
-			Events:  events,
+			Project:    scope.Project.Slug,
+			Env:        scope.Env.Slug,
+			Hook:       h,
+			Created:    formatTime(h.CreatedAt),
+			Events:     events,
+			HeaderList: headerLines(h.Headers),
 		}
 
 		if s.webhooks != nil {
@@ -71,14 +89,41 @@ func (s *Server) webhooksView(r *http.Request, scope envScope, errMsg, notice st
 		rows = append(rows, row)
 	}
 
+	shown := WebhookForm{Events: map[string]bool{}}
+	if form != nil {
+		shown = *form
+		if shown.Events == nil {
+			shown.Events = map[string]bool{}
+		}
+	}
+
 	project, env := scope.Project, scope.Env
 	return WebhooksView{
 		Layout:    s.layoutFor(r, "Webhooks · "+project.Name, &project, &env, scope.Envs, "webhooks"),
 		Rows:      rows,
 		AllEvents: model.WebhookEvents,
+		Form:      shown,
 		Error:     errMsg,
 		Notice:    notice,
 	}, nil
+}
+
+// headerLines renders a header map for display, sorted by name.
+func headerLines(headers map[string]string) []string {
+	if len(headers) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		lines = append(lines, name+": "+headers[name])
+	}
+	return lines
 }
 
 // deliveryRow turns a delivery into the three things worth showing: when, how
@@ -107,7 +152,7 @@ func (s *Server) webhooksPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	view, err := s.webhooksView(r, scope, "", "")
+	view, err := s.webhooksView(r, scope, "", "", nil)
 	if err != nil {
 		internalError(w, "list webhooks", err)
 		return
@@ -125,9 +170,23 @@ func (s *Server) createWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := strings.TrimSpace(r.FormValue("url"))
-	if err := webhook.ValidateURL(target); err != nil {
-		s.renderWebhooksPanel(w, r, scope, err.Error(), "", http.StatusUnprocessableEntity)
+	form := WebhookForm{
+		URL:     strings.TrimSpace(r.FormValue("url")),
+		Label:   strings.TrimSpace(r.FormValue("label")),
+		Headers: r.FormValue("headers"),
+		Events:  map[string]bool{},
+		Payload: r.FormValue("includePayload") == "1",
+	}
+	for _, e := range r.Form["events"] {
+		form.Events[strings.TrimSpace(e)] = true
+	}
+
+	fail := func(msg string) {
+		s.renderWebhooksPanel(w, r, scope, msg, "", &form, http.StatusUnprocessableEntity)
+	}
+
+	if err := webhook.ValidateURL(form.URL); err != nil {
+		fail(err.Error())
 		return
 	}
 
@@ -141,10 +200,16 @@ func (s *Server) createWebhook(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !model.ValidWebhookEvent(e) {
-			s.renderWebhooksPanel(w, r, scope, "Unknown event: "+e, "", http.StatusUnprocessableEntity)
+			fail("Unknown event: " + e)
 			return
 		}
 		events = append(events, e)
+	}
+
+	headers, err := webhook.ParseHeaders(form.Headers)
+	if err != nil {
+		fail("Headers: " + err.Error())
+		return
 	}
 
 	secret, err := webhook.NewSecret()
@@ -153,14 +218,15 @@ func (s *Server) createWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = s.db.CreateWebhook(r.Context(), scope.Env.ID, target, secret, events,
-		strings.TrimSpace(r.FormValue("label")), r.FormValue("includePayload") == "1")
+	_, err = s.db.CreateWebhook(r.Context(), scope.Env.ID, form.URL, secret, events,
+		headers, form.Label, form.Payload)
 	if err != nil {
 		internalError(w, "create webhook", err)
 		return
 	}
 
-	s.renderWebhooksPanel(w, r, scope, "", "Webhook created. Copy the signing secret into your receiver.", http.StatusOK)
+	s.renderWebhooksPanel(w, r, scope, "",
+		"Webhook created. Copy the signing secret into your receiver.", nil, http.StatusOK)
 }
 
 func (s *Server) toggleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +239,7 @@ func (s *Server) toggleWebhook(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "toggle webhook", err)
 		return
 	}
-	s.renderWebhooksPanel(w, r, scope, "", "", http.StatusOK)
+	s.renderWebhooksPanel(w, r, scope, "", "", nil, http.StatusOK)
 }
 
 // testWebhook queues a synthetic delivery so a receiver can be checked without
@@ -185,7 +251,7 @@ func (s *Server) testWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.webhooks == nil {
-		s.renderWebhooksPanel(w, r, scope, "Webhook delivery is not running.", "", http.StatusOK)
+		s.renderWebhooksPanel(w, r, scope, "Webhook delivery is not running.", "", nil, http.StatusOK)
 		return
 	}
 
@@ -193,7 +259,8 @@ func (s *Server) testWebhook(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "test webhook", err)
 		return
 	}
-	s.renderWebhooksPanel(w, r, scope, "", "Test delivery queued — refresh to see the result.", http.StatusOK)
+	s.renderWebhooksPanel(w, r, scope, "",
+		"Test delivery queued — refresh to see the result.", nil, http.StatusOK)
 }
 
 func (s *Server) deleteWebhook(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +273,7 @@ func (s *Server) deleteWebhook(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "delete webhook", err)
 		return
 	}
-	s.renderWebhooksPanel(w, r, scope, "", "", http.StatusOK)
+	s.renderWebhooksPanel(w, r, scope, "", "", nil, http.StatusOK)
 }
 
 // resolveWebhook loads the {id} webhook, scoped to the environment in the path
@@ -236,9 +303,9 @@ func (s *Server) resolveWebhook(w http.ResponseWriter, r *http.Request) (envScop
 }
 
 func (s *Server) renderWebhooksPanel(w http.ResponseWriter, r *http.Request, scope envScope,
-	errMsg, notice string, status int) {
+	errMsg, notice string, form *WebhookForm, status int) {
 
-	view, err := s.webhooksView(r, scope, errMsg, notice)
+	view, err := s.webhooksView(r, scope, errMsg, notice, form)
 	if err != nil {
 		internalError(w, "list webhooks", err)
 		return

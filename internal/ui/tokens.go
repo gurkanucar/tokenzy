@@ -60,6 +60,30 @@ type TokenDetail struct {
 	Value string
 }
 
+// TokenForm is the state of the issue form.
+//
+// It exists so that a rejected submission comes back with what was typed still
+// in it. Losing a carefully written payload because the lifetime was a digit
+// too long is the kind of small cruelty that makes people stop using a panel.
+type TokenForm struct {
+	Payload  string
+	TTLValue string
+	TTLUnit  string
+	MaxUses  string
+}
+
+// defaultTokenForm is what a fresh form starts with: a payload shaped like a
+// reference rather than a record, and a lifetime short enough to be a sensible
+// default for the links most people are issuing.
+func defaultTokenForm() TokenForm {
+	return TokenForm{
+		Payload:  "{\n  \"userId\": \"usr_123\",\n  \"action\": \"accept_invitation\"\n}",
+		TTLValue: "15",
+		TTLUnit:  token.DefaultTTLUnit,
+		MaxUses:  "1",
+	}
+}
+
 // TokensView backs tokens.html and its fragments.
 type TokensView struct {
 	Layout
@@ -73,11 +97,28 @@ type TokensView struct {
 	MoreURL string
 	// Status is the active filter, carried into the fragments' own URLs.
 	Status string
-	// MaxTTLSeconds is shown next to the TTL field so the ceiling is visible
-	// before a request is rejected for exceeding it.
+	Form   TokenForm
+	// TTLUnits populates the lifetime unit dropdown.
+	TTLUnits []token.TTLUnit
+	// MaxTTLSeconds bounds the field in the browser; MaxTTLLabel says the same
+	// thing in words, so the ceiling is visible before a request is rejected
+	// for exceeding it.
 	MaxTTLSeconds int64
 	MaxTTLLabel   string
 	Total         int64
+}
+
+// tokensQuery is everything that shapes a rendering of the tokens page. It is
+// a struct rather than eight positional arguments because most callers care
+// about one field and would otherwise have to count commas to reach it.
+type tokensQuery struct {
+	scope      envScope
+	status     string
+	cursor     string
+	newToken   string
+	newTokenID string
+	errMsg     string
+	form       *TokenForm
 }
 
 func (s *Server) tokensBase(scope envScope) string {
@@ -86,15 +127,22 @@ func (s *Server) tokensBase(scope envScope) string {
 
 // tokensView assembles the whole page: the filter chips with live counts, and
 // one page of rows.
-func (s *Server) tokensView(r *http.Request, scope envScope, status, cursor, newToken, newTokenID, errMsg string) (TokensView, error) {
+func (s *Server) tokensView(r *http.Request, q tokensQuery) (TokensView, error) {
+	scope := q.scope
+	status := q.status
 	if status != "" && !token.ValidStatus(status) {
 		status = ""
+	}
+
+	form := defaultTokenForm()
+	if q.form != nil {
+		form = *q.form
 	}
 
 	tokens, next, err := s.db.ListTokens(r.Context(), scope.Env.ID, db.TokenFilter{
 		Status: status,
 		Limit:  pageSize,
-		Cursor: db.ParseCursor(cursor),
+		Cursor: db.ParseCursor(q.cursor),
 	})
 	if err != nil {
 		return TokensView{}, err
@@ -146,17 +194,20 @@ func (s *Server) tokensView(r *http.Request, scope envScope, status, cursor, new
 	}
 
 	project, env := scope.Project, scope.Env
+	ceiling := s.limits.Ceiling()
 	return TokensView{
 		Layout:        s.layoutFor(r, "Tokens · "+project.Name, &project, &env, scope.Envs, "tokens"),
 		Rows:          rows,
 		Chips:         chips,
-		NewToken:      newToken,
-		NewTokenID:    newTokenID,
-		Error:         errMsg,
+		NewToken:      q.newToken,
+		NewTokenID:    q.newTokenID,
+		Error:         q.errMsg,
 		MoreURL:       moreURL,
 		Status:        status,
-		MaxTTLSeconds: int64(s.limits.MaxTTL / time.Second),
-		MaxTTLLabel:   s.limits.MaxTTL.String(),
+		Form:          form,
+		TTLUnits:      token.TTLUnits,
+		MaxTTLSeconds: int64(ceiling / time.Second),
+		MaxTTLLabel:   token.HumanDuration(ceiling),
 		Total:         total,
 	}, nil
 }
@@ -185,7 +236,7 @@ func (s *Server) tokensPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	view, err := s.tokensView(r, scope, r.URL.Query().Get("status"), "", "", "", "")
+	view, err := s.tokensView(r, tokensQuery{scope: scope, status: r.URL.Query().Get("status")})
 	if err != nil {
 		internalError(w, "list tokens", err)
 		return
@@ -203,7 +254,11 @@ func (s *Server) tokenRows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	view, err := s.tokensView(r, scope, query.Get("status"), query.Get("cursor"), "", "", "")
+	view, err := s.tokensView(r, tokensQuery{
+		scope:  scope,
+		status: query.Get("status"),
+		cursor: query.Get("cursor"),
+	})
 	if err != nil {
 		internalError(w, "list tokens", err)
 		return
@@ -223,22 +278,30 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 
 	status := r.FormValue("status")
 
-	fail := func(msg string) {
-		s.renderTokensPanel(w, r, scope, status, "", "", msg, http.StatusUnprocessableEntity)
+	// Everything the operator typed, kept together so a rejection can hand it
+	// straight back rather than clearing the form.
+	form := TokenForm{
+		Payload:  r.FormValue("payload"),
+		TTLValue: r.FormValue("ttlValue"),
+		TTLUnit:  r.FormValue("ttlUnit"),
+		MaxUses:  r.FormValue("maxUses"),
 	}
 
-	payload, err := token.ValidatePayload(json.RawMessage(r.FormValue("payload")))
+	fail := func(msg string) {
+		s.renderTokensPanel(w, r, tokensQuery{
+			scope: scope, status: status, errMsg: msg, form: &form,
+		}, http.StatusUnprocessableEntity)
+	}
+
+	payload, err := token.ValidatePayload(json.RawMessage(form.Payload))
 	if err != nil {
 		fail(err.Error())
 		return
 	}
 
-	ttlSeconds, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("ttlSeconds")), 10, 64)
-	if err != nil {
-		fail(token.ErrTTLRequired.Error())
-		return
-	}
-	ttl, err := s.limits.ValidateTTL(ttlSeconds)
+	// The unit is applied here rather than in the browser, so the form works
+	// with JavaScript switched off and the ceiling is enforced in one place.
+	ttl, err := s.limits.ParseTTL(form.TTLValue, form.TTLUnit)
 	if err != nil {
 		fail(err.Error())
 		return
@@ -248,7 +311,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	// a season pass and a single-use one — so it is a deliberate blank, not a
 	// missing value to complain about.
 	var maxUses *int64
-	if raw := strings.TrimSpace(r.FormValue("maxUses")); raw != "" {
+	if raw := strings.TrimSpace(form.MaxUses); raw != "" {
 		n, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
 			fail(token.ErrMaxUses.Error())
@@ -279,7 +342,9 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.renderTokensPanel(w, r, scope, status, created.Value, created.ID, "", http.StatusOK)
+	s.renderTokensPanel(w, r, tokensQuery{
+		scope: scope, status: status, newToken: created.Value, newTokenID: created.ID,
+	}, http.StatusOK)
 }
 
 // tokenDetail expands one row: the payload, and a button that will fetch the
@@ -401,13 +466,13 @@ func (s *Server) deleteToken(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "delete token", err)
 		return
 	}
-	s.renderTokensPanel(w, r, scope, r.URL.Query().Get("status"), "", "", "", http.StatusOK)
+	s.renderTokensPanel(w, r, tokensQuery{
+		scope: scope, status: r.URL.Query().Get("status"),
+	}, http.StatusOK)
 }
 
-func (s *Server) renderTokensPanel(w http.ResponseWriter, r *http.Request, scope envScope,
-	status, newToken, newTokenID, errMsg string, code int) {
-
-	view, err := s.tokensView(r, scope, status, "", newToken, newTokenID, errMsg)
+func (s *Server) renderTokensPanel(w http.ResponseWriter, r *http.Request, q tokensQuery, code int) {
+	view, err := s.tokensView(r, q)
 	if err != nil {
 		internalError(w, "list tokens", err)
 		return

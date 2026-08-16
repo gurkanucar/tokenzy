@@ -92,6 +92,78 @@ func ValidateURL(raw string) error {
 	return nil
 }
 
+// ParseHeaders reads the panel's "Name: value" lines into a header map.
+//
+// Names that tokenzy sets itself are rejected rather than quietly dropped: a
+// custom X-Webhook-Signature could not take effect anyway (delivery sets ours
+// last), and silently ignoring it would leave somebody convinced they had
+// configured something that does nothing.
+func ParseHeaders(raw string) (map[string]string, error) {
+	headers := map[string]string{}
+
+	for i, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		name, value, ok := strings.Cut(line, ":")
+		if !ok {
+			return nil, fmt.Errorf("line %d: expected 'Name: value', got %q", i+1, line)
+		}
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" {
+			return nil, fmt.Errorf("line %d: header name is empty", i+1)
+		}
+		if !validHeaderName(name) {
+			return nil, fmt.Errorf("line %d: %q is not a valid header name", i+1, name)
+		}
+		if reservedHeader(name) {
+			return nil, fmt.Errorf("line %d: %s is set by tokenzy and cannot be overridden", i+1, name)
+		}
+		// A bare carriage return survives the split and the trim, and would
+		// let one field smuggle in a second header.
+		if strings.ContainsAny(value, "\r\n") {
+			return nil, fmt.Errorf("line %d: header value cannot contain a line break", i+1)
+		}
+		headers[name] = value
+	}
+	return headers, nil
+}
+
+// reservedHeaders are the ones delivery sets for itself.
+var reservedHeaders = []string{
+	"Content-Type",
+	"X-Webhook-Id",
+	"X-Webhook-Event",
+	"X-Webhook-Attempt",
+	"X-Webhook-Signature",
+}
+
+func reservedHeader(name string) bool {
+	for _, r := range reservedHeaders {
+		if strings.EqualFold(name, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// validHeaderName keeps a stray newline or colon out of the request, which is
+// what turns a configuration field into a header-injection hole.
+func validHeaderName(name string) bool {
+	for _, c := range name {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.ContainsRune("-_.", c):
+		default:
+			return false
+		}
+	}
+	return name != ""
+}
+
 // NewSecret returns a signing secret for a new webhook.
 func NewSecret() (string, error) {
 	buf := make([]byte, 32)
@@ -350,6 +422,21 @@ func (d *Dispatcher) post(ctx context.Context, hook model.Webhook,
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, hook.URL, bytes.NewReader(body))
 	if err != nil {
 		return 0, err
+	}
+
+	// The webhook's own headers go on first, so everything below overwrites
+	// them rather than the other way round. A custom X-Webhook-Signature would
+	// otherwise replace the real one, turning a verifiable delivery into one
+	// the receiver would reject — or worse, accept on the strength of a value
+	// the sender chose.
+	for name, value := range hook.Headers {
+		// Host is not settable through the header map; net/http reads it from
+		// the request field.
+		if strings.EqualFold(name, "Host") {
+			req.Host = value
+			continue
+		}
+		req.Header.Set(name, value)
 	}
 
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")

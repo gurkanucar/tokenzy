@@ -192,7 +192,12 @@ type Webhook struct {
 	Secret string
 	// Events is the subscription list. Empty means every event.
 	Events []string
-	Label  string
+	// Headers are extra request headers, for receivers that sit behind a
+	// gateway wanting an Authorization or a routing key of its own. They are
+	// applied before tokenzy's own headers, so none of them can overwrite the
+	// signature.
+	Headers map[string]string
+	Label   string
 	// IncludePayload adds the token's own JSON payload to the delivery. Off by
 	// default: the payload is the caller's data, and it does not have to travel
 	// to a third host just because a token changed.
